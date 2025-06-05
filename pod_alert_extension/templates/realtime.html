@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Odds Table</title>
+    <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-family: Arial, sans-serif;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+            word-wrap: break-word;
+            max-width: 200px;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        .new-row {
+            background-color: yellow;
+        }
+    </style>
+</head>
+<body>
+    <h1>Odds Table</h1>
+    <table id="oddsTable">
+        <thead>
+            <tr>
+                <th>Event ID</th>
+                <th>Teams</th>
+                <th>League</th>
+                <th>Start Time</th>
+                <th>Time Since Alert</th>
+                <th>Time Since Last Update</th>
+                <th>Money Line (Full Match)</th>
+                <th>Spreads (Full Match)</th>
+                <th>Totals (Full Match)</th>
+                <th>Money Line (First Half)</th>
+                <th>Totals (First Half)</th>
+            </tr>
+        </thead>
+        <tbody id="oddsTableBody">
+            <!-- Initial render -->
+        </tbody>
+    </table>
+
+    <script>
+        function formatTimestamp(timestamp) {
+            if (!timestamp) return 'N/A';
+            const date = new Date(timestamp);
+            return date.toLocaleString();
+        }
+
+        function timeSince(timestamp, baseTime = Date.now(), latency = 0) {
+            if (!timestamp || isNaN(parseInt(timestamp))) {
+                console.warn(`Invalid timestamp: ${timestamp}`);
+                return 'N/A';
+            }
+            const adjustedBaseTime = baseTime - latency;
+            const diff = adjustedBaseTime - parseInt(timestamp);
+            const seconds = Math.floor(diff / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+            const days = Math.floor(hours / 24);
+
+            if (seconds < 0) return '0 seconds ago'; // Prevent negative times
+            if (days > 0) return `${days} day${days > 1 ? 's' : ''} ago`;
+            if (hours > 0) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+            if (minutes > 0) return `${minutes} minute${minutes > 1 ? 's' : ''} ago`;
+            return `${seconds} second${seconds !== 1 ? 's' : ''} ago`;
+        }
+
+        let lastServerTime = Date.now();
+        let latency = 0;
+
+        async function refreshTable() {
+            try {
+                const fetchStartTime = Date.now();
+                const response = await fetch('/get_odds_data');
+                const fetchEndTime = Date.now();
+                const result = await response.json();
+                const data = result.odds_data;
+                const serverTime = result.server_time || Date.now();
+                latency = fetchEndTime - serverTime;
+                console.log(`Server time fetched: ${serverTime}, Fetch took: ${fetchEndTime - fetchStartTime}ms, Latency: ${latency}ms at ${new Date().toISOString()}`);
+
+                lastServerTime = serverTime;
+                const adjustedServerTime = serverTime + latency;
+
+                const tbody = document.getElementById('oddsTableBody');
+                const previousEventIds = new Set([...tbody.querySelectorAll('tr')].map(row => row.querySelector('td').textContent));
+
+                tbody.innerHTML = '';
+                console.log(`Table updated at ${new Date().toISOString()}, ${Object.keys(data).length} events found.`);
+
+                const rawDataWithTimes = Object.fromEntries(
+                    Object.entries(data).map(([eid, d]) => {
+                        const addedTime = parseInt(d.added_time) || 0;
+                        const lastUpdated = parseInt(d.last_updated) || 0;
+                        return [eid, {
+                            added_time: addedTime,
+                            parsed_added_time: addedTime,
+                            last_updated: lastUpdated,
+                            parsed_last_updated: lastUpdated,
+                            timeSince: timeSince(addedTime, adjustedServerTime, latency),
+                            updateSince: timeSince(lastUpdated, adjustedServerTime, latency)
+                        }];
+                    })
+                );
+                console.log("Raw data before sorting:", rawDataWithTimes);
+
+                const sortedData = Object.fromEntries(
+                    Object.entries(data).sort(([, a], [, b]) => {
+                        const aTime = parseInt(a.added_time) || 0;
+                        const bTime = parseInt(b.added_time) || 0;
+                        console.log(`Comparing ${a.added_time} (${aTime}) vs ${b.added_time} (${bTime}) for event IDs ${Object.keys(a)[0] || 'unknown'} vs ${Object.keys(b)[0] || 'unknown'}`);
+                        return bTime - aTime;
+                    })
+                );
+
+                const sortedDataWithTimes = Object.fromEntries(
+                    Object.entries(sortedData).map(([eid, d]) => {
+                        const addedTime = parseInt(d.added_time) || 0;
+                        const lastUpdated = parseInt(d.last_updated) || 0;
+                        return [eid, {
+                            added_time: addedTime,
+                            parsed_added_time: addedTime,
+                            last_updated: lastUpdated,
+                            parsed_last_updated: lastUpdated,
+                            timeSince: timeSince(addedTime, adjustedServerTime, latency),
+                            updateSince: timeSince(lastUpdated, adjustedServerTime, latency)
+                        }];
+                    })
+                );
+                console.log("Sorted data:", sortedDataWithTimes);
+
+                for (const eventId in sortedData) {
+                    const entry = sortedData[eventId];
+                    const odds = entry.odds;
+                    const addedTime = parseInt(entry.added_time) || 0;
+                    const lastUpdated = parseInt(entry.last_updated) || 0;
+                    const period0 = odds.periods?.num_0 || {};
+                    const period1 = odds.periods?.num_1 || {};
+
+                    let spreadsFull = '';
+                    if (period0.spreads) {
+                        for (const hdp in period0.spreads) {
+                            const spread = period0.spreads[hdp];
+                            spreadsFull += `${hdp}: Home ${spread.home}, Away ${spread.away}<br>`;
+                        }
+                    } else {
+                        spreadsFull = 'N/A';
+                    }
+
+                    let totalsFull = '';
+                    if (period0.totals) {
+                        for (const points in period0.totals) {
+                            const total = period0.totals[points];
+                            totalsFull += `${points}: Over ${total.over}, Under ${total.under}<br>`;
+                        }
+                    } else {
+                        totalsFull = 'N/A';
+                    }
+
+                    let totalsFirstHalf = '';
+                    if (period1.totals) {
+                        for (const points in period1.totals) {
+                            const total = period1.totals[points];
+                            totalsFirstHalf += `${points}: Over ${total.over}, Under ${total.under}<br>`;
+                        }
+                    } else {
+                        totalsFirstHalf = 'N/A';
+                    }
+
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${eventId}</td>
+                        <td>${odds.home || 'N/A'} vs ${odds.away || 'N/A'}</td>
+                        <td>${odds.league_name || 'N/A'}</td>
+                        <td>${formatTimestamp(odds.starts) || 'N/A'}</td>
+                        <td class="time-since" data-timestamp="${addedTime}">${timeSince(addedTime, adjustedServerTime, latency)}</td>
+                        <td class="time-update" data-timestamp="${lastUpdated}">${timeSince(lastUpdated, adjustedServerTime, latency)}</td>
+                        <td>${period0.money_line ? `Home: ${period0.money_line.home}, Draw: ${period0.money_line.draw}, Away: ${period0.money_line.away}` : 'N/A'}</td>
+                        <td>${spreadsFull}</td>
+                        <td>${totalsFull}</td>
+                        <td>${period1.money_line ? `Home: ${period1.money_line.home}, Draw: ${period1.money_line.draw}, Away: ${period1.money_line.away}` : 'N/A'}</td>
+                        <td>${totalsFirstHalf}</td>
+                    `;
+                    const timeDiff = adjustedServerTime - addedTime;
+                    if (!previousEventIds.has(eventId) && timeDiff <= 10000) {
+                        row.classList.add('new-row');
+                        setTimeout(() => row.classList.remove('new-row'), 10000);
+                    }
+                    tbody.appendChild(row);
+                }
+
+                document.querySelectorAll('.time-since').forEach(cell => {
+                    const timestamp = parseInt(cell.getAttribute('data-timestamp'));
+                    if (!isNaN(timestamp)) {
+                        cell.textContent = timeSince(timestamp, adjustedServerTime, latency);
+                    } else {
+                        cell.textContent = 'N/A';
+                    }
+                });
+                updateTimeSinceLastUpdate(adjustedServerTime);
+            } catch (error) {
+                console.error('Error refreshing table:', error);
+            }
+        }
+
+        function updateTimeSinceLastUpdate(adjustedServerTime) {
+            const currentTime = adjustedServerTime + (Date.now() - lastServerTime);
+            document.querySelectorAll('.time-update').forEach(cell => {
+                const timestamp = parseInt(cell.getAttribute('data-timestamp'));
+                if (!isNaN(timestamp)) {
+                    cell.textContent = timeSince(timestamp, currentTime, latency);
+                } else {
+                    cell.textContent = 'N/A';
+                }
+            });
+        }
+
+        setInterval(refreshTable, 10000);
+        setInterval(updateTimeSinceLastUpdate, 1000);
+        refreshTable();
+    </script>
+</body>
+</html>
