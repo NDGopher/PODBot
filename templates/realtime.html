@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pinnacle & BetBCK Live Odds Comparison</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        h1 { text-align: center; color: #2c3e50; }
+        .event-container {
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            margin-bottom: 25px;
+            padding: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .event-header {
+            background-color: #3498db;
+            color: white;
+            padding: 10px;
+            margin: -15px -15px 10px -15px;
+            border-top-left-radius: 8px;
+            border-top-right-radius: 8px;
+            font-size: 1.2em;
+        }
+        .event-meta { font-size: 0.85em; color: #555; margin-bottom: 10px; line-height: 1.4; }
+        .alert-info { padding: 5px; background-color: #fcf8e3; border: 1px solid #faebcc; border-radius: 4px; margin-bottom:10px;}
+        .alert-info strong { color: #8a6d3b; } /* Make alert trigger text distinct */
+
+        table { border-collapse: collapse; width: 100%; font-size: 0.9em; margin-top: 10px;}
+        th, td { border: 1px solid #e0e0e0; padding: 6px 8px; text-align: left; vertical-align: top; }
+        th { background-color: #e9ecef; color: #495057; white-space: nowrap; position: sticky; top: 0; z-index: 1;} /* Sticky headers */
+        .market-group td { background-color: #f8f9fa; font-weight: bold; color: #333; } /* Lighter group header */
+        .loading { text-align: center; font-size: 1.1em; color: #7f8c8d; padding: 20px; }
+        .error { color: #c0392b; font-weight: bold; }
+        
+        /* Column specific styling */
+        .pinnacle-odds { /* Class for Pinnacle regular odds column if needed */ }
+        .nvp { color: #27ae60; /* Pinnacle NVP */ }
+        .betbck-odds { /* Class for BetBCK odds column */ }
+        .ev { font-weight: bold; /* EV % */ }
+
+        /* Align numbers to the right */
+        /* Market, Selection, Line, PinOdds, PinNVP, BckOdds, EV */
+        /* Line */ th:nth-child(3), td:nth-child(3),
+        /* PinOdds */ th:nth-child(4), td:nth-child(4),
+        /* PinNVP */ th:nth-child(5), td:nth-child(5),
+        /* BckOdds */ th:nth-child(6), td:nth-child(6),
+        /* EV */ th:nth-child(7), td:nth-child(7) {
+            text-align: right;
+        }
+
+        /* Cell Flashing Animation for Pinnacle Odds */
+        .flash-yellow {
+            animation: flashYellowAnimation 0.7s 2; /* Adjusted duration/iterations */
+        }
+        @keyframes flashYellowAnimation {
+            0%, 100% { background-color: inherit; }
+            50% { background-color: #fffacd; } /* LemonChiffon */
+        }
+
+        /* Highlighting for Positive EV */
+        .positive-ev {
+            background-color: #d4edda !important;
+            /* color: #155724 !important; */ /* Text color can remain default or be set */
+        }
+        .positive-ev td.ev {
+            font-weight: bolder;
+            color: #155724 !important; /* Darker green for EV text */
+        }
+         .negative-ev td.ev {
+            color: #721c24 !important; /* Reddish for negative EV */
+        }
+
+
+        /* BetBCK Status Display */
+        .betbck-status-container { padding: 5px 0; }
+        .betbck-status {
+            padding: 8px;
+            margin-top: 0px; /* Reset margin if inside a container */
+            margin-bottom: 8px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            border: 1px solid transparent;
+        }
+        .betbck-status.error { background-color: #f8d7da; color: #721c24; border-color: #f5c6cb; }
+        .betbck-status.warning { background-color: #fff3cd; color: #856404; border-color: #ffeeba; }
+        .betbck-status.info { background-color: #d1ecf1; color: #0c5460; border-color: #bee5eb; }
+        .betbck-status.success { background-color: #d4edda; color: #155724; border-color: #c3e6cb; }
+    </style>
+</head>
+<body>
+    <h1>Pinnacle & BetBCK Live Odds Comparison</h1>
+    <div id="oddsDisplayArea">
+        <p class="loading" id="mainLoadingMessage">Waiting for POD alerts...</p>
+    </div>
+    <script src="{{ url_for('static', filename='realtime.js') }}"></script>
+</body>
+</html>
