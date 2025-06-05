@@ -47,7 +47,7 @@ def calculate_ev(bet_decimal_odds, true_decimal_odds):
 def clean_pod_team_name_for_search(name_with_extras):
     if not name_with_extras: return ""
     cleaned = name_with_extras; cleaned = re.sub(r'\s*\([^)]*\)', '', cleaned).strip() 
-    league_country_suffixes = ['mlb', 'nba', 'nfl', 'nhl', 'ncaaf', 'ncaab', 'poland', 'bulgaria', 'uruguay', 'colombia', 'peru', 'argentina', 'sweden', 'romania', 'finland', 'liga 1', 'serie a', 'bundesliga', 'la liga', 'ligue 1', 'premier league', 'wnba']
+    league_country_suffixes = ['mlb', 'nba', 'nfl', 'nhl', 'ncaaf', 'ncaab', 'poland', 'bulgaria', 'uruguay', 'colombia', 'peru', 'argentina', 'sweden', 'romania', 'finland', 'liga 1', 'serie a', 'bundesliga', 'la liga', 'ligue 1', 'premier league', 'wnba', 'fifa']
     for suffix in league_country_suffixes:
         pattern = r'(\s+' + re.escape(suffix) + r'|' + re.escape(suffix) + r')$'
         if re.search(pattern, cleaned, flags=re.IGNORECASE):

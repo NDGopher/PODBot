@@ -101,7 +101,7 @@ def normalize_team_name_for_matching(name):
     norm_name = re.sub(r'\s*\([^)]*\)', '', norm_name).strip() 
     league_country_suffixes = ['mlb', 'nba', 'nfl', 'nhl', 'ncaaf', 'ncaab', 
                                'poland', 'bulgaria', 'uruguay', 'colombia', 'peru', 
-                               'argentina', 'sweden', 'romania', 'finland', 
+                               'argentina', 'sweden', 'romania', 'finland', 'fifa',
                                'liga 1', 'serie a', 'bundesliga', 'la liga', 'ligue 1', 'premier league', 'wnba', 'england'] 
     for suffix in league_country_suffixes:
         pattern = r'(\s+' + re.escape(suffix) + r'|' + re.escape(suffix) + r')$'
