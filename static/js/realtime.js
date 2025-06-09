@@ -10,11 +10,16 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error("Realtime.js: Critical element missing!");
         return;
     }
-    console.log("Realtime.js v10.0 (Modern UI) Loaded.");
+    console.log("Realtime.js v11.0 (Popups & Timestamps) Loaded.");
 
     const REFRESH_INTERVAL_MS = 3000;
     const POSITIVE_EV_THRESHOLD = 0.0001; // 0.01%
-    let lastDataTimestamp = 0;
+    let lastDataSignature = "";
+
+    // --- NEW: Popup Management ---
+    if (!window.openedEvPopups) {
+        window.openedEvPopups = {};
+    }
 
     function setStatus(state, message) {
         statusIndicator.className = `status-${state}`;
@@ -24,6 +29,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function timeSince(timestamp) {
         if (!timestamp) return 'N/A';
         const seconds = Math.floor((new Date() - new Date(timestamp * 1000)) / 1000);
+        if (seconds < 5) return "just now";
         let interval = seconds / 31536000;
         if (interval > 1) return Math.floor(interval) + " years ago";
         interval = seconds / 2592000;
@@ -36,6 +42,55 @@ document.addEventListener('DOMContentLoaded', () => {
         if (interval > 1) return Math.floor(interval) + "m ago";
         return Math.floor(seconds) + "s ago";
     }
+    
+    function americanToDecimal(americanOdds) {
+        if (americanOdds === null || americanOdds === undefined) return null;
+        const odds = parseFloat(americanOdds);
+        if (isNaN(odds)) return null;
+        if (odds > 0) return (odds / 100) + 1;
+        if (odds < 0) return (100 / Math.abs(odds)) + 1;
+        return null;
+    }
+
+    // --- NEW: Popup Function ---
+    function showPositiveEvPopup(eventData, marketDetails) {
+        const { eventId, homeTeam, awayTeam, periodName } = eventData;
+        const { selectionName, lineDisplay, marketType, bckDisplay, pinNvpDisplay, evDisplay } = marketDetails;
+
+        const popupKey = `evPopup_${eventId}_${marketType}_${selectionName}_${lineDisplay}`.replace(/[^a-zA-Z0-9]/g, '_');
+
+        if (window.openedEvPopups[popupKey] && !window.openedEvPopups[popupKey].closed) {
+            window.openedEvPopups[popupKey].focus();
+            return;
+        }
+
+        const popup = window.open('', popupKey, `width=450,height=350,scrollbars=yes,resizable=yes`);
+        if (!popup) {
+            console.warn("Popup blocked by browser.");
+            return;
+        }
+        window.openedEvPopups[popupKey] = popup;
+
+        popup.document.title = `+EV Alert: ${selectionName}`;
+        popup.document.body.innerHTML = `
+            <style>
+                body { font-family: system-ui, sans-serif; background-color: #1f2937; color: #f9fafb; padding: 20px; }
+                h3 { color: #3b82f6; }
+                p { margin: 8px 0; line-height: 1.5; }
+                strong { color: #9ca3af; }
+                .ev-value { color: #22c55e; font-weight: bold; font-size: 1.2em; }
+            </style>
+            <h3>Positive EV Opportunity!</h3>
+            <p><strong>Event:</strong> ${homeTeam} vs ${awayTeam}</p>
+            <p><strong>Period:</strong> ${periodName}</p>
+            <hr>
+            <p><strong>Market:</strong> ${marketType}</p>
+            <p><strong>Selection:</strong> ${selectionName} ${lineDisplay}</p>
+            <p><strong>BetBCK Odds:</strong> ${bckDisplay}</p>
+            <p><strong>Pinnacle NVP:</strong> ${pinNvpDisplay}</p>
+            <p class="ev-value">EV: ${evDisplay}</p>
+        `;
+    }
 
     function createOrUpdateEventCard(eventId, eventData) {
         let card = document.getElementById(`event-${eventId}`);
@@ -47,62 +102,74 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const pinnacleData = eventData.pinnacle_data_processed?.data || {};
-        const alertDetails = eventData.alert_trigger_details || {};
-        const betbckData = eventData.betbck_data || {};
-        const betbckPayload = betbckData.status === 'success' ? betbckData.data : null;
+        const alertDetails = eventData.original_alert_details || {}; // Corrected key name
+        const betbckPayload = eventData.betbck_data?.data || null;
 
         const homeTeam = pinnacleData.home || alertDetails.homeTeam || 'N/A';
         const awayTeam = pinnacleData.away || alertDetails.awayTeam || 'N/A';
         
-        // --- Populate Header ---
         card.querySelector('.event-title').textContent = `${homeTeam} vs ${awayTeam}`;
         const leagueName = pinnacleData.league_name || alertDetails.leagueName || 'Unknown League';
         const startTime = pinnacleData.starts ? new Date(pinnacleData.starts).toLocaleString() : 'N/A';
         card.querySelector('.event-meta-info').textContent = `${leagueName} | Starts: ${startTime}`;
+        
+        // --- FIX: Update "Last Updated" timestamp ---
+        const lastUpdateTimestamp = eventData.last_pinnacle_data_update_timestamp;
+        card.querySelector('.event-last-update').textContent = `Odds Updated: ${timeSince(lastUpdateTimestamp)}`;
         card.querySelector('.event-time-since').textContent = `Alert ${timeSince(eventData.alert_arrival_timestamp)}`;
         
-        // --- Populate Alert Banner ---
+        // --- FIX: Correctly populate alert banner ---
         const oldOdds = alertDetails.oldOdds || 'N/A';
         const newOdds = alertDetails.newOdds || 'N/A';
-        card.querySelector('.alert-description').textContent = alertDetails.betDescription || 'N/A';
-        card.querySelector('.alert-meta').textContent = `(Alert: ${oldOdds} → ${newOdds}, NVP: ${alertDetails.noVigPriceFromAlert || 'N/A'})`;
+        const betDesc = alertDetails.betDescription || 'N/A';
+        const noVig = alertDetails.noVigPriceFromAlert || 'N/A';
+        card.querySelector('.alert-description').textContent = betDesc;
+        card.querySelector('.alert-meta').textContent = `(Alert: ${oldOdds} → ${newOdds}, NVP: ${noVig})`;
 
-        // --- Populate BetBCK Status ---
         const bckStatusContainer = card.querySelector('.betbck-status-container');
-        let bckStatusHtml = '';
-        if (betbckData.status === 'success' && betbckPayload) {
-            bckStatusHtml = `<p class="betbck-status success">BetBCK: Odds found for '${betbckPayload.betbck_displayed_local}' vs '${betbckPayload.betbck_displayed_visitor}'</p>`;
-        } else if (betbckData.status && betbckData.message) {
-            bckStatusHtml = `<p class="betbck-status error">BetBCK: ${betbckData.message}</p>`;
+        if (eventData.betbck_data?.status === 'success' && betbckPayload) {
+            bckStatusContainer.innerHTML = `<p class="betbck-status success">BetBCK: Odds found for '${betbckPayload.betbck_displayed_local}' vs '${betbckPayload.betbck_displayed_visitor}'</p>`;
+        } else if (eventData.betbck_data?.message) {
+            bckStatusContainer.innerHTML = `<p class="betbck-status error">BetBCK: ${eventData.betbck_data.message}</p>`;
         } else {
-            bckStatusHtml = `<p class="betbck-status info">BetBCK: Odds check pending...</p>`;
+            bckStatusContainer.innerHTML = `<p class="betbck-status info">BetBCK: Odds check pending...</p>`;
         }
-        bckStatusContainer.innerHTML = bckStatusHtml;
         
-        // --- Populate Markets Table ---
         const tableBody = card.querySelector('tbody');
         const prevTableBodyHtml = tableBody.innerHTML;
-        tableBody.innerHTML = ''; // Clear old rows
+        tableBody.innerHTML = ''; 
         let maxEv = -Infinity;
 
-        const renderRow = (marketType, selectionName, lineDisplay, pinNvpAm, bckOddsAm) => {
-            const row = document.createElement('tr');
+        const renderRow = (marketType, selectionName, lineDisplay, pinNvpAm, bckOddsAm, periodName) => {
             const pinNvpDisplay = pinNvpAm || 'N/A';
             const bckDisplay = bckOddsAm || 'N/A';
             let evDisplay = 'N/A';
             let rowClass = '';
 
             if (pinNvpDisplay !== 'N/A' && bckDisplay !== 'N/A') {
-                const pinNvpDec = parseFloat(pinNvpDisplay) > 0 ? (parseFloat(pinNvpDisplay) / 100) + 1 : (100 / Math.abs(parseFloat(pinNvpDisplay))) + 1;
-                const bckDec = parseFloat(bckOddsAm) > 0 ? (parseFloat(bckOddsAm) / 100) + 1 : (100 / Math.abs(parseFloat(bckOddsAm))) + 1;
+                const pinNvpDec = americanToDecimal(pinNvpDisplay);
+                const bckDec = americanToDecimal(bckOddsAm);
                 if (pinNvpDec && bckDec && pinNvpDec > 1.0001) {
                     const evValue = (bckDec / pinNvpDec) - 1;
                     evDisplay = (evValue * 100).toFixed(2) + '%';
                     maxEv = Math.max(maxEv, evValue);
                     rowClass = evValue > POSITIVE_EV_THRESHOLD ? 'positive-ev' : 'negative-ev';
+
+                    // --- ADDED: Trigger popup on new positive EV bets ---
+                    if (isNewCard && evValue > POSITIVE_EV_THRESHOLD) {
+                        showPositiveEvPopup(
+                            { eventId, homeTeam, awayTeam, periodName },
+                            { selectionName, lineDisplay, marketType, bckDisplay, pinNvpDisplay, evDisplay }
+                        );
+                    }
                 }
             }
 
+            if (evDisplay === 'N/A') {
+                return null;
+            }
+
+            const row = document.createElement('tr');
             row.className = rowClass;
             row.innerHTML = `
                 <td>${marketType}</td>
@@ -116,43 +183,47 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         
         const appendMarketRows = (periodData, periodName) => {
-            if (!periodData) return;
-            const marketGroup = document.createElement('tr');
-            marketGroup.className = 'market-group-row';
-            marketGroup.innerHTML = `<td colspan="6">${periodName} Markets</td>`;
-            tableBody.appendChild(marketGroup);
-            
-            // Moneyline
+            if (!periodData || Object.keys(periodData).length === 0) return;
+            const marketRows = []; 
+
             if (periodData.money_line) {
                 const ml = periodData.money_line;
-                tableBody.appendChild(renderRow('Moneyline', homeTeam, '', ml.nvp_american_home, betbckPayload?.home_moneyline_american));
-                tableBody.appendChild(renderRow('Moneyline', awayTeam, '', ml.nvp_american_away, betbckPayload?.away_moneyline_american));
+                marketRows.push(renderRow('Moneyline', homeTeam, '', ml.nvp_american_home, betbckPayload?.home_moneyline_american, periodName));
+                marketRows.push(renderRow('Moneyline', awayTeam, '', ml.nvp_american_away, betbckPayload?.away_moneyline_american, periodName));
                 if (ml.nvp_american_draw) {
-                    tableBody.appendChild(renderRow('Moneyline', 'Draw', '', ml.nvp_american_draw, betbckPayload?.draw_moneyline_american));
+                    marketRows.push(renderRow('Moneyline', 'Draw', '', ml.nvp_american_draw, betbckPayload?.draw_moneyline_american, periodName));
                 }
             }
-            // Spreads
             if (periodData.spreads) {
                 Object.values(periodData.spreads).forEach(s => {
                     const homeLine = s.hdp > 0 ? `+${s.hdp}` : `${s.hdp}`;
-                    const awayLine = -s.hdp > 0 ? `+${-s.hdp}`: `${-s.hdp}`;
+                    const awayLine = -s.hdp === 0 ? '0' : (-s.hdp > 0 ? `+${-s.hdp}`: `${-s.hdp}`);
                     const bckHomeSpread = betbckPayload?.home_spreads?.find(bs => bs.line === homeLine)?.odds;
                     const bckAwaySpread = betbckPayload?.away_spreads?.find(bs => bs.line === awayLine)?.odds;
-                    tableBody.appendChild(renderRow('Spread', homeTeam, homeLine, s.nvp_american_home, bckHomeSpread));
-                    tableBody.appendChild(renderRow('Spread', awayTeam, awayLine, s.nvp_american_away, bckAwaySpread));
+                    marketRows.push(renderRow('Spread', homeTeam, homeLine, s.nvp_american_home, bckHomeSpread, periodName));
+                    marketRows.push(renderRow('Spread', awayTeam, awayLine, s.nvp_american_away, bckAwaySpread, periodName));
                 });
             }
-            // Totals
             if (periodData.totals) {
                 Object.values(periodData.totals).forEach(t => {
-                    const line = t.points;
+                    const line = String(t.points);
                     let bckOver, bckUnder;
-                    if (betbckPayload && String(betbckPayload.game_total_line) === String(line)) {
+                    if (betbckPayload && String(betbckPayload.game_total_line) === line) {
                         bckOver = betbckPayload.game_total_over_odds;
                         bckUnder = betbckPayload.game_total_under_odds;
                     }
-                    tableBody.appendChild(renderRow('Total', 'Over', line, t.nvp_american_over, bckOver));
-                    tableBody.appendChild(renderRow('Total', 'Under', line, t.nvp_american_under, bckUnder));
+                    marketRows.push(renderRow('Total', 'Over', line, t.nvp_american_over, bckOver, periodName));
+                    marketRows.push(renderRow('Total', 'Under', line, t.nvp_american_under, bckUnder, periodName));
+                });
+            }
+
+            if (marketRows.some(row => row !== null)) {
+                const marketGroup = document.createElement('tr');
+                marketGroup.className = 'market-group-row';
+                marketGroup.innerHTML = `<td colspan="6">${periodName} Markets</td>`;
+                tableBody.appendChild(marketGroup);
+                marketRows.forEach(row => {
+                    if (row) tableBody.appendChild(row);
                 });
             }
         };
@@ -160,22 +231,19 @@ document.addEventListener('DOMContentLoaded', () => {
         appendMarketRows(pinnacleData.periods?.num_0, "Full Game");
         appendMarketRows(pinnacleData.periods?.num_1, "1st Half");
         
-        card.dataset.maxEv = maxEv; // Store max EV for sorting
+        card.dataset.maxEv = maxEv;
         if (tableBody.innerHTML !== prevTableBodyHtml && !isNewCard) {
             card.querySelector('.markets-table-container').classList.add('flash-yellow');
-            setTimeout(() => card.querySelector('.markets-table-container').classList.remove('flash-yellow'), 1500);
+            setTimeout(() => card.querySelector('.markets-table-container')?.classList.remove('flash-yellow'), 1500);
         }
 
         if (isNewCard) {
             card.querySelector('.btn-dismiss').addEventListener('click', () => {
                 card.classList.add('dismissed');
-                // After animation, remove from DOM to keep things tidy
                 setTimeout(() => card.remove(), 500);
             });
             oddsDisplayArea.appendChild(card);
         }
-        
-        return card;
     }
     
     function sortCardsByEv() {
@@ -194,33 +262,35 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!response.ok) throw new Error(`HTTP error ${response.status}`);
             
             const eventsData = await response.json();
-            const now = Date.now();
-            
-            if (Object.keys(eventsData).length === 0 && oddsDisplayArea.children.length <= 1) { // <=1 to account for loading message
-                mainLoadingMessage.style.display = 'block';
-            } else {
-                mainLoadingMessage.style.display = 'none';
-            }
+            const currentSignature = JSON.stringify(eventsData);
 
-            if (JSON.stringify(eventsData).length === lastDataTimestamp) {
+            if (currentSignature === lastDataSignature) {
+                // Still update timestamps even if data is the same
+                document.querySelectorAll('.event-container:not(.dismissed)').forEach(card => {
+                    const eventId = card.id?.replace('event-', '');
+                    if (eventsData[eventId]) {
+                        card.querySelector('.event-last-update').textContent = `Odds Updated: ${timeSince(eventsData[eventId].last_pinnacle_data_update_timestamp)}`;
+                        card.querySelector('.event-time-since').textContent = `Alert ${timeSince(eventsData[eventId].alert_arrival_timestamp)}`;
+                    }
+                });
                 setStatus('connected', 'Live (No Changes)');
-                return; // No changes, skip DOM updates
+                return; 
             }
-            lastDataTimestamp = JSON.stringify(eventsData).length;
+            lastDataSignature = currentSignature;
             setStatus('connected', 'Live (Updated)');
+            
+            mainLoadingMessage.style.display = Object.keys(eventsData).length === 0 ? 'block' : 'none';
 
             const receivedEventIds = new Set(Object.keys(eventsData));
             
-            // Remove cards for events that are no longer active
             [...oddsDisplayArea.children].forEach(card => {
-                const eventId = card.id.replace('event-', '');
+                const eventId = card.id?.replace('event-', '');
                 if (eventId && !receivedEventIds.has(eventId)) {
                     card.classList.add('dismissed');
                     setTimeout(() => card.remove(), 500);
                 }
             });
 
-            // Add or update cards
             for (const [eventId, eventData] of Object.entries(eventsData)) {
                 createOrUpdateEventCard(eventId, eventData);
             }
@@ -233,7 +303,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     
-    // Initial fetch and set interval
     fetchAndRefresh();
     setInterval(fetchAndRefresh, REFRESH_INTERVAL_MS);
 });
