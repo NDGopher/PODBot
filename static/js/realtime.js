@@ -9,7 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error("Realtime.js: Critical element missing!");
         return;
     }
-    console.log("Realtime.js v11.0 (Popups & Timestamps) Loaded.");
+    console.log("Realtime.js v12.0 (Fixed Data Display) Loaded.");
 
     const REFRESH_INTERVAL_MS = 3000;
     const POSITIVE_EV_THRESHOLD = 0.0001; // 0.01%
@@ -17,10 +17,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const DISMISSAL_TIMEOUT_MS = 180000; // 3 minutes
     let lastDataSignature = "";
     let cardTimeouts = new Map();
+    let eventTimeouts = {};
 
     if (!window.openedEvPopups) {
         window.openedEvPopups = {};
     }
+
+    // Track dismissed event IDs
+    let dismissedEventIds = new Set(JSON.parse(localStorage.getItem('dismissedEventIds') || '[]'));
 
     function setStatus(state, message) {
         statusIndicator.className = `status-${state}`;
@@ -107,133 +111,164 @@ document.addEventListener('DOMContentLoaded', () => {
         setInterval(updatePopup, REFRESH_INTERVAL_MS);
     }
 
-    function createOrUpdateEventCard(eventId, eventData) {
-        let card = document.getElementById(`event-${eventId}`);
-        const isNewCard = !card;
-        const alertTimestamp = eventData.alert_arrival_timestamp;
-
-        if (isNewCard) {
-            card = cardTemplate.content.cloneNode(true).firstElementChild;
-            card.id = `event-${eventId}`;
-        }
-
-        const { title, meta_info, last_update, alert_description, alert_meta, betbck_status, markets } = eventData;
-        const [league, start] = meta_info.split(' | ');
-        const [homeTeam, awayTeam] = title.split(' vs ');
-        const lastUpdateTimestamp = new Date(last_update).getTime() / 1000;
-
-        card.querySelector('.event-title').textContent = `${homeTeam} vs ${awayTeam}`; // Use cleaned team names
-        card.querySelector('.event-meta-info').textContent = `${league} | Starts: ${start || 'N/A'}`;
-        card.querySelector('.event-last-update').textContent = `Odds Updated: ${timeSince(lastUpdateTimestamp)}`;
-        card.querySelector('.event-time-since').textContent = `Alert ${timeSince(alertTimestamp)}`;
-        card.querySelector('.alert-description').textContent = alert_description;
-        card.querySelector('.alert-meta').textContent = alert_meta;
-        card.querySelector('.betbck-status-container').textContent = betbck_status;
-
-        const tableBody = card.querySelector('tbody');
-        const prevTableBodyHtml = tableBody.innerHTML;
-        tableBody.innerHTML = '';
-        let hasPositiveEv = false;
-        let maxEv = -Infinity;
-
-        console.log("Markets data:", markets); // Debug log to check data
-
-        const renderRow = (marketType, selectionName, lineDisplay, pinNvpAm, bckOddsAm, evDisplay, periodName) => {
-            const pinNvpDisplay = pinNvpAm !== null && pinNvpAm !== undefined ? pinNvpAm : 'N/A';
-            const bckDisplay = bckOddsAm !== null && bckOddsAm !== undefined ? bckOddsAm : 'N/A';
-            let rowClass = '';
-
-            console.log(`Rendering row: ${marketType}, ${selectionName}, ${lineDisplay}, ${pinNvpDisplay}, ${bckDisplay}, ${evDisplay}`); // Debug log
-
-            if (evDisplay !== 'N/A') {
-                const evValue = parseFloat(evDisplay);
-                if (evValue > POSITIVE_EV_THRESHOLD) {
-                    rowClass = 'positive-ev';
-                    hasPositiveEv = true;
-                    if (isNewCard) {
-                        showPositiveEvPopup(
-                            { eventId, homeTeam, awayTeam, periodName },
-                            { selectionName, lineDisplay, marketType, bckDisplay, pinNvpDisplay, evDisplay }
-                        );
-                    }
+    function cleanTeamName(name, eventTitle) {
+        // Use the event title to extract team names
+        if (!name) return '';
+        // Try to match the team name from the event title
+        if (eventTitle) {
+            const teams = eventTitle.split(' vs ');
+            for (const t of teams) {
+                if (t && name.toLowerCase().includes(t.toLowerCase().replace(/[^a-zA-Z0-9 ]/g, ''))) {
+                    return t.trim();
                 }
-                maxEv = Math.max(maxEv, evValue);
             }
-
-            const row = document.createElement('tr');
-            row.className = rowClass;
-            row.innerHTML = `
-                <td>${marketType}</td>
-                <td>${selectionName}</td>
-                <td>${lineDisplay || ''}</td>
-                <td class="col-odds">${pinNvpDisplay}</td>
-                <td class="col-odds">${bckDisplay}</td>
-                <td class="col-ev">${evDisplay}</td>
-            `;
-            return row;
-        };
-
-        markets.forEach(market => {
-            const periodName = market.market.includes('1H') ? "1st Half" : "Full Game";
-            renderRow(
-                market.market.replace(' 1H', ''),
-                market.selection,
-                market.line,
-                market.pinnacle_nvp,
-                market.betbck_odds,
-                market.ev,
-                periodName
-            ).forEach(row => tableBody.appendChild(row));
-        });
-
-        // Add market group headers manually if needed
-        if (markets.some(m => !m.market.includes('1H'))) {
-            const fullGameGroup = document.createElement('tr');
-            fullGameGroup.className = 'market-group-row';
-            fullGameGroup.innerHTML = `<td colspan="6">Full Game Markets</td>`;
-            tableBody.insertBefore(fullGameGroup, tableBody.firstChild);
         }
-        if (markets.some(m => m.market.includes('1H'))) {
-            const halfGameGroup = document.createElement('tr');
-            halfGameGroup.className = 'market-group-row';
-            halfGameGroup.innerHTML = `<td colspan="6">1st Half Markets</td>`;
-            tableBody.appendChild(halfGameGroup);
-        }
+        // Remove common suffixes
+        return name.replace(/(MLB|NBA|NFL|NHL|NCAAF|NCAAB|FIFA)$/i, '').trim();
+    }
 
-        card.dataset.maxEv = maxEv !== -Infinity ? maxEv.toString() : '-Infinity';
-        if (tableBody.innerHTML !== prevTableBodyHtml && !isNewCard) {
-            card.querySelector('.markets-table-container').classList.add('flash-yellow');
-            setTimeout(() => card.querySelector('.markets-table-container')?.classList.remove('flash-yellow'), 1500);
+    function renderRow(market) {
+        const row = document.createElement('tr');
+        
+        // Market type cell
+        const marketCell = document.createElement('td');
+        marketCell.textContent = market.market;
+        row.appendChild(marketCell);
+        
+        // Selection cell
+        const selectionCell = document.createElement('td');
+        selectionCell.textContent = market.selection;
+        row.appendChild(selectionCell);
+        
+        // Line cell
+        const lineCell = document.createElement('td');
+        lineCell.textContent = market.line || '';
+        row.appendChild(lineCell);
+        
+        // Pinnacle odds cell
+        const pinnacleCell = document.createElement('td');
+        pinnacleCell.textContent = market.pinnacle_odds || '';
+        row.appendChild(pinnacleCell);
+        
+        // BetBCK odds cell
+        const betbckCell = document.createElement('td');
+        betbckCell.textContent = market.betbck_odds || '';
+        row.appendChild(betbckCell);
+        
+        // EV cell
+        const evCell = document.createElement('td');
+        evCell.textContent = market.ev || 'N/A';
+        if (market.ev && parseFloat(market.ev) > 0) {
+            evCell.classList.add('positive-ev');
         }
+        row.appendChild(evCell);
+        
+        return row;
+    }
 
-        if (isNewCard) {
-            card.querySelector('.btn-dismiss').addEventListener('click', () => {
-                card.classList.add('dismissed');
-                setTimeout(() => card.remove(), 500);
-            });
+    function createOrUpdateEventCard(eventId, eventData) {
+        if (dismissedEventIds.has(eventId)) return; // Don't render dismissed cards
+        let card = document.getElementById(`event-${eventId}`);
+        if (!card) {
+            card = cardTemplate.content.cloneNode(true).querySelector('.event-container');
+            card.id = `event-${eventId}`;
             oddsDisplayArea.appendChild(card);
+        }
 
-            const dismissalTimeout = setTimeout(() => {
+        // Update header info
+        card.querySelector('.event-title').textContent = eventData.title;
+        card.querySelector('.event-meta-info').textContent = eventData.meta_info;
+        card.querySelector('.event-last-update').textContent = `Odds Updated: ${timeSince(eventData.last_update)}`;
+        card.querySelector('.event-time-since').textContent = `Alert ${timeSince(eventData.alert_arrival_timestamp)}`;
+
+        // Update alert info
+        card.querySelector('.alert-description').textContent = eventData.alert_description;
+        card.querySelector('.alert-meta').textContent = eventData.alert_meta;
+
+        // Remove BetBCK status line
+        const betbckStatusContainer = card.querySelector('.betbck-status-container');
+        betbckStatusContainer.textContent = '';
+        betbckStatusContainer.style.display = 'none';
+
+        // Update markets table
+        const tbody = card.querySelector('tbody');
+        tbody.innerHTML = '';
+        let hasPositiveEV = false;
+        let markets = eventData.markets && Array.isArray(eventData.markets) ? [...eventData.markets] : [];
+        // Sorting support
+        if (card.sortByEvDesc === undefined) card.sortByEvDesc = true;
+        if (markets.length > 1 && card.sortedByEv) {
+            markets.sort((a, b) => {
+                const evA = parseFloat(a.ev) || -Infinity;
+                const evB = parseFloat(b.ev) || -Infinity;
+                return card.sortByEvDesc ? evB - evA : evA - evB;
+            });
+        }
+        markets.forEach(market => {
+            if (!market.betbck_odds || market.betbck_odds === 'N/A') return; // Only show rows with BetBCK odds
+            const row = document.createElement('tr');
+            // Market cell
+            const marketCell = document.createElement('td');
+            marketCell.textContent = market.market;
+            row.appendChild(marketCell);
+            // Selection cell (cleaned)
+            const selectionCell = document.createElement('td');
+            selectionCell.textContent = cleanTeamName(market.selection, eventData.title);
+            row.appendChild(selectionCell);
+            // Line cell
+            const lineCell = document.createElement('td');
+            lineCell.textContent = market.line || '';
+            row.appendChild(lineCell);
+            // Pinnacle NVP cell
+            const pinnacleCell = document.createElement('td');
+            pinnacleCell.textContent = market.pinnacle_nvp || 'N/A';
+            row.appendChild(pinnacleCell);
+            // BetBCK odds cell
+            const betbckCell = document.createElement('td');
+            betbckCell.textContent = market.betbck_odds || 'N/A';
+            row.appendChild(betbckCell);
+            // EV cell with star for positive EV
+            const evCell = document.createElement('td');
+            evCell.textContent = market.ev || 'N/A';
+            if (market.ev && market.ev !== 'N/A' && parseFloat(market.ev) > 0) {
+                evCell.classList.add('positive-ev');
+                evCell.innerHTML = `<span style="color:gold; font-size:1.2em; margin-right:4px;">★</span>${market.ev}`;
+                hasPositiveEV = true;
+            }
+            row.appendChild(evCell);
+            tbody.appendChild(row);
+        });
+        // Add sorting by EV on header click
+        const table = card.querySelector('table');
+        const evHeader = table.querySelector('th.col-ev');
+        if (evHeader && !evHeader.hasSortListener) {
+            evHeader.style.cursor = 'pointer';
+            evHeader.title = 'Sort by EV';
+            evHeader.addEventListener('click', () => {
+                card.sortedByEv = true;
+                card.sortByEvDesc = !card.sortByEvDesc;
+                createOrUpdateEventCard(eventId, eventData);
+            });
+            evHeader.hasSortListener = true;
+        }
+        // Auto-dismiss after 1 minute if no positive EV
+        if (!hasPositiveEV) {
+            setTimeout(() => {
+                if (document.body.contains(card)) {
+                    card.classList.add('dismissed');
+                    setTimeout(() => card.remove(), 500);
+                }
+            }, 60000);
+        }
+        // Add dismiss button functionality
+        const dismissBtn = card.querySelector('.btn-dismiss');
+        if (dismissBtn) {
+            dismissBtn.onclick = () => {
+                dismissedEventIds.add(eventId);
+                localStorage.setItem('dismissedEventIds', JSON.stringify(Array.from(dismissedEventIds)));
                 card.classList.add('dismissed');
                 setTimeout(() => card.remove(), 500);
-            }, DISMISSAL_TIMEOUT_MS);
-
-            if (!hasPositiveEv) {
-                const noEvTimeout = setTimeout(() => {
-                    if (!card.classList.contains('dismissed')) {
-                        card.classList.add('dismissed');
-                        setTimeout(() => card.remove(), 500);
-                    }
-                }, NO_EV_TIMEOUT_MS);
-                cardTimeouts.set(eventId, noEvTimeout);
-            } else {
-                console.log(`[Realtime] Scheduling BetBCK refresh for event ${eventId} with +EV`);
-                // Placeholder for BetBCK refresh; requires backend endpoint
-            }
-        } else if (hasPositiveEv && cardTimeouts.has(eventId)) {
-            clearTimeout(cardTimeouts.get(eventId));
-            cardTimeouts.delete(eventId);
-            console.log(`[Realtime] Clearing no-EV timeout for event ${eventId} due to +EV`);
+            };
         }
     }
 
@@ -255,24 +290,29 @@ document.addEventListener('DOMContentLoaded', () => {
             const eventsData = await response.json();
             const currentSignature = JSON.stringify(eventsData);
 
-            if (currentSignature === lastDataSignature) {
-                document.querySelectorAll('.event-container:not(.dismissed)').forEach(card => {
-                    const eventId = card.id?.replace('event-', '');
-                    if (eventsData[eventId]) {
-                        card.querySelector('.event-last-update').textContent = `Odds Updated: ${timeSince(eventsData[eventId].last_pinnacle_data_update_timestamp)}`;
-                        card.querySelector('.event-time-since').textContent = `Alert ${timeSince(eventsData[eventId].alert_arrival_timestamp)}`;
-                    }
-                });
-                setStatus('connected', 'Live (No Changes)');
-                return; 
+            // Remove dismissed IDs that are no longer in the feed (so new alerts can show up)
+            for (const eventId of Array.from(dismissedEventIds)) {
+                if (!(eventId in eventsData)) {
+                    dismissedEventIds.delete(eventId);
+                }
             }
+            localStorage.setItem('dismissedEventIds', JSON.stringify(Array.from(dismissedEventIds)));
+
+            if (currentSignature === lastDataSignature) {
+                setStatus('connected', 'Live (No Changes)');
+                return;
+            }
+            
             lastDataSignature = currentSignature;
             setStatus('connected', 'Live (Updated)');
             
-            mainLoadingMessage.style.display = Object.keys(eventsData).length === 0 ? 'block' : 'none';
+            // Show/hide loading message
+            if (mainLoadingMessage) {
+                mainLoadingMessage.style.display = Object.keys(eventsData).length === 0 ? 'block' : 'none';
+            }
 
-            const receivedEventIds = new Set(Object.entries(eventsData).map(([id]) => id));
-            
+            // Remove expired cards
+            const receivedEventIds = new Set(Object.keys(eventsData));
             [...oddsDisplayArea.children].forEach(card => {
                 const eventId = card.id?.replace('event-', '');
                 if (eventId && !receivedEventIds.has(eventId)) {
@@ -281,11 +321,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
+            // Create/update cards for each event
             for (const [eventId, eventData] of Object.entries(eventsData)) {
                 createOrUpdateEventCard(eventId, eventData);
             }
-            
-            sortCardsByEv();
 
         } catch (error) {
             console.error("Error refreshing events:", error);
@@ -293,6 +332,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     
+    // Initial fetch and start refresh interval
     fetchAndRefresh();
     setInterval(fetchAndRefresh, REFRESH_INTERVAL_MS);
 });
