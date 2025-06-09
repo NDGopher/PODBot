@@ -1,0 +1,206 @@
+/* static/css/realtime.css */
+:root {
+    --bg-main: #111827;
+    --bg-card: #1f2937;
+    --bg-header: #374151;
+    --bg-alert: #4b5563;
+    --border-color: #4b5563;
+    --text-primary: #f9fafb;
+    --text-secondary: #9ca3af;
+    --accent-color: #3b82f6;
+    --positive-ev-bg: rgba(34, 197, 94, 0.1);
+    --positive-ev-text: #22c55e;
+    --negative-ev-text: #ef4444;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    margin: 0;
+    padding: 1.5rem;
+}
+
+.main-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+    padding: 0 1rem;
+}
+
+h1 {
+    color: var(--text-primary);
+    font-size: 1.75rem;
+}
+
+#status-indicator {
+    padding: 0.5rem 1rem;
+    border-radius: 999px;
+    font-weight: 500;
+    transition: background-color 0.3s ease;
+}
+#status-indicator.status-connected { background-color: var(--positive-ev-text); }
+#status-indicator.status-disconnected { background-color: var(--negative-ev-text); }
+#status-indicator.status-stale { background-color: #f59e0b; }
+
+
+#oddsDisplayArea {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(600px, 1fr));
+    gap: 1.5rem;
+}
+
+.loading {
+    color: var(--text-secondary);
+    font-size: 1.2rem;
+    text-align: center;
+    grid-column: 1 / -1;
+}
+
+.event-container {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1), 0 10px 20px rgba(0, 0, 0, 0.2);
+    transition: all 0.4s ease;
+    opacity: 1;
+    transform: scale(1);
+}
+
+.event-container.dismissed {
+    opacity: 0;
+    transform: scale(0.95);
+    height: 0;
+    margin-bottom: -1.5rem; /* Counteract gap */
+    pointer-events: none;
+}
+
+.event-header {
+    background-color: var(--bg-header);
+    padding: 1rem 1.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.event-title {
+    margin: 0;
+    font-size: 1.25rem;
+}
+
+.event-meta-info {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin: 0.25rem 0 0;
+}
+
+.event-time-since {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin-right: 1rem;
+}
+
+.btn-dismiss {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 1.75rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.2s ease;
+}
+.btn-dismiss:hover {
+    color: var(--text-primary);
+}
+
+.alert-info-banner {
+    background-color: var(--bg-alert);
+    padding: 0.75rem 1.5rem;
+    font-size: 0.9rem;
+}
+.alert-description {
+    font-weight: 600;
+}
+.alert-meta {
+    color: var(--text-secondary);
+    margin-left: 0.5rem;
+}
+
+.betbck-status-container { padding: 0.75rem 1.5rem; }
+.betbck-status {
+    padding: 0.5rem 1rem; margin: 0; border-radius: 6px;
+    font-size: 0.85rem; border: 1px solid transparent; text-align: center;
+}
+.betbck-status.error { background-color: #f8d7da; color: #721c24; border-color: #f5c6cb; }
+.betbck-status.warning { background-color: #fff3cd; color: #856404; border-color: #ffeeba; }
+.betbck-status.info { background-color: #d1ecf1; color: #0c5460; border-color: #bee5eb; }
+.betbck-status.success { background-color: #d4edda; color: #155724; border-color: #c3e6cb; }
+
+
+.markets-table-container {
+    padding: 0 1.5rem 1.5rem;
+}
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.95em;
+}
+
+th, td {
+    padding: 0.75rem 0.5rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border-color);
+}
+
+th {
+    color: var(--text-secondary);
+    font-weight: 500;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+}
+
+tr:last-child td {
+    border-bottom: none;
+}
+
+td {
+    vertical-align: middle;
+}
+
+.col-odds, .col-ev { text-align: right; }
+.market-group-row td {
+    background-color: rgba(75, 85, 99, 0.5);
+    font-weight: 600;
+    border-top: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.positive-ev {
+    background-color: var(--positive-ev-bg);
+    font-weight: 600;
+}
+td.col-ev {
+    font-size: 1.1em;
+    font-weight: 700;
+}
+
+.positive-ev td.col-ev { color: var(--positive-ev-text); }
+.negative-ev td.col-ev { color: var(--negative-ev-text); }
+
+.flash-yellow {
+    animation: flashYellowAnimation 1.5s;
+}
+
+@keyframes flashYellowAnimation {
+    0%, 100% { background-color: transparent; }
+    50% { background-color: rgba(245, 158, 11, 0.3); }
+}
+
+@media (max-width: 768px) {
+    body { padding: 1rem; }
+    #oddsDisplayArea { grid-template-columns: 1fr; }
+    .main-header { flex-direction: column; align-items: flex-start; gap: 1rem; }
+}
