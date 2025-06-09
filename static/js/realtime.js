@@ -25,10 +25,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Track dismissed event IDs
     let dismissedEventIds = new Set(JSON.parse(localStorage.getItem('dismissedEventIds') || '[]'));
+    // Track which eventIds are currently visible (not dismissed)
+    let visibleEventIds = new Set();
+
+    // Track previous odds for flashing
+    let previousOdds = {};
 
     function setStatus(state, message) {
         statusIndicator.className = `status-${state}`;
         statusText.textContent = message;
+    }
+
+    function getArrow(newVal, oldVal) {
+        if (newVal == null || oldVal == null || newVal === oldVal) return '';
+        if (parseFloat(newVal) > parseFloat(oldVal)) return '↑';
+        if (parseFloat(newVal) < parseFloat(oldVal)) return '↓';
+        return '';
     }
 
     function timeSince(timestamp) {
@@ -139,6 +151,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return '';
     }
 
+    // Helper to check if a market is positive or zero EV
+    function isPositiveOrZeroEV(ev) {
+        const val = parseFloat(ev);
+        return !isNaN(val) && val >= 0;
+    }
+
     function renderRow(market) {
         const row = document.createElement('tr');
         
@@ -180,6 +198,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function createOrUpdateEventCard(eventId, eventData) {
         if (dismissedEventIds.has(eventId)) return; // Don't render dismissed cards
+        visibleEventIds.add(eventId);
         let card = document.getElementById(`event-${eventId}`);
         if (!card) {
             card = cardTemplate.content.cloneNode(true).querySelector('.event-container');
@@ -192,6 +211,14 @@ document.addEventListener('DOMContentLoaded', () => {
         card.querySelector('.event-title').textContent = `${leagueEmoji ? leagueEmoji + ' ' : ''}${eventData.title}`;
         card.querySelector('.event-meta-info').textContent = eventData.meta_info;
         card.querySelector('.event-last-update').textContent = `Odds Updated: ${timeSince(eventData.last_update)}`;
+        // Show BetBCK refreshed timer
+        let betbckTimer = card.querySelector('.betbck-last-update');
+        if (!betbckTimer) {
+            betbckTimer = document.createElement('p');
+            betbckTimer.className = 'betbck-last-update';
+            card.querySelector('.event-header-info').appendChild(betbckTimer);
+        }
+        betbckTimer.textContent = `BetBCK Refreshed: ${timeSince(eventData.betbck_last_update)}`;
         card.querySelector('.event-time-since').textContent = `Alert ${timeSince(eventData.alert_arrival_timestamp)}`;
 
         // Update alert info
@@ -206,13 +233,25 @@ document.addEventListener('DOMContentLoaded', () => {
         // Update markets table
         const tbody = card.querySelector('tbody');
         tbody.innerHTML = '';
-        let hasPositiveEV = false;
+        let hasPositiveOrZeroEV = false;
         let markets = eventData.markets && Array.isArray(eventData.markets) ? [...eventData.markets] : [];
-        // Auto-sort by EV descending by default
-        markets.sort((a, b) => (parseFloat(b.ev) || -Infinity) - (parseFloat(a.ev) || -Infinity));
+        // Auto-sort by EV descending by default, treating 0% as positive
+        markets.sort((a, b) => {
+            const evA = parseFloat(a.ev);
+            const evB = parseFloat(b.ev);
+            if (isNaN(evA) && isNaN(evB)) return 0;
+            if (isNaN(evA)) return 1;
+            if (isNaN(evB)) return -1;
+            // 0% is better than negative
+            if (evA >= 0 && evB < 0) return -1;
+            if (evA < 0 && evB >= 0) return 1;
+            return evB - evA;
+        });
         card.sortedByEv = true;
         card.sortByEvDesc = true;
-        markets.forEach(market => {
+        // Track previous odds for flashing
+        if (!previousOdds[eventId]) previousOdds[eventId] = {};
+        markets.forEach((market, idx) => {
             if (!market.betbck_odds || market.betbck_odds === 'N/A') return; // Only show rows with BetBCK odds
             const row = document.createElement('tr');
             // Market cell
@@ -227,21 +266,37 @@ document.addEventListener('DOMContentLoaded', () => {
             const lineCell = document.createElement('td');
             lineCell.textContent = market.line || '';
             row.appendChild(lineCell);
-            // Pinnacle NVP cell
+            // Pinnacle NVP cell with flash/arrow
             const pinnacleCell = document.createElement('td');
+            let prevPin = previousOdds[eventId][`pin_${idx}`];
+            let arrowPin = getArrow(market.pinnacle_nvp, prevPin);
             pinnacleCell.textContent = market.pinnacle_nvp || 'N/A';
+            if (arrowPin) pinnacleCell.innerHTML += ` <span style='font-size:1.1em;'>${arrowPin}</span>`;
+            if (prevPin !== undefined && market.pinnacle_nvp !== prevPin) {
+                pinnacleCell.classList.add('flash-yellow');
+                setTimeout(() => pinnacleCell.classList.remove('flash-yellow'), 2000);
+            }
+            previousOdds[eventId][`pin_${idx}`] = market.pinnacle_nvp;
             row.appendChild(pinnacleCell);
-            // BetBCK odds cell
+            // BetBCK odds cell with flash/arrow
             const betbckCell = document.createElement('td');
+            let prevBck = previousOdds[eventId][`bck_${idx}`];
+            let arrowBck = getArrow(market.betbck_odds, prevBck);
             betbckCell.textContent = market.betbck_odds || 'N/A';
+            if (arrowBck) betbckCell.innerHTML += ` <span style='font-size:1.1em;'>${arrowBck}</span>`;
+            if (prevBck !== undefined && market.betbck_odds !== prevBck) {
+                betbckCell.classList.add('odds-flash');
+                setTimeout(() => betbckCell.classList.remove('odds-flash'), 800);
+            }
+            previousOdds[eventId][`bck_${idx}`] = market.betbck_odds;
             row.appendChild(betbckCell);
-            // EV cell with star for positive EV
+            // EV cell with star for positive/zero EV
             const evCell = document.createElement('td');
             evCell.textContent = market.ev || 'N/A';
-            if (market.ev && market.ev !== 'N/A' && parseFloat(market.ev) > 0) {
+            if (market.ev && market.ev !== 'N/A' && parseFloat(market.ev) >= 0) {
                 evCell.classList.add('positive-ev');
-                evCell.innerHTML = `<span style="color:gold; font-size:1.2em; margin-right:4px;">★</span>${market.ev}`;
-                hasPositiveEV = true;
+                evCell.innerHTML = `<span style=\"color:gold; font-size:1.2em; margin-right:4px;\">★</span>${market.ev}`;
+                hasPositiveOrZeroEV = true;
             }
             row.appendChild(evCell);
             tbody.appendChild(row);
@@ -260,28 +315,24 @@ document.addEventListener('DOMContentLoaded', () => {
             evHeader.hasSortListener = true;
         }
         // Auto-dismiss logic
+        if (!card.firstNoEvTimestamp) card.firstNoEvTimestamp = null;
         if (card.dismissTimeout) clearTimeout(card.dismissTimeout);
         if (card.betbckRefreshTimeout) clearTimeout(card.betbckRefreshTimeout);
-        if (hasPositiveEV) {
-            // Refresh BetBCK odds after 1 minute
+        if (hasPositiveOrZeroEV) {
+            // Refresh BetBCK odds after 1 minute ONLY if card is still visible
             card.betbckRefreshTimeout = setTimeout(() => {
-                fetchAndRefresh();
+                if (visibleEventIds.has(eventId)) fetchAndRefresh();
             }, 60000);
             // Dismiss after 3 minutes
-            card.dismissTimeout = setTimeout(() => {
-                if (document.body.contains(card)) {
-                    card.classList.add('dismissed');
-                    setTimeout(() => card.remove(), 500);
-                }
-            }, 180000);
+            card.dismissTimeout = setTimeout(autoDismissCard, 180000);
+            card.firstNoEvTimestamp = null;
         } else {
-            // Dismiss after 1 minute if no positive EV
-            card.dismissTimeout = setTimeout(() => {
-                if (document.body.contains(card)) {
-                    card.classList.add('dismissed');
-                    setTimeout(() => card.remove(), 500);
-                }
-            }, 60000);
+            // Track first time with no positive/zero EV
+            if (!card.firstNoEvTimestamp) card.firstNoEvTimestamp = Date.now();
+            // Dismiss after 1 minute from first no-EV
+            const msSinceNoEv = Date.now() - card.firstNoEvTimestamp;
+            const msLeft = Math.max(60000 - msSinceNoEv, 0);
+            card.dismissTimeout = setTimeout(autoDismissCard, msLeft);
         }
         // Add dismiss button functionality
         const dismissBtn = card.querySelector('.btn-dismiss');
@@ -291,14 +342,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 localStorage.setItem('dismissedEventIds', JSON.stringify(Array.from(dismissedEventIds)));
                 card.classList.add('dismissed');
                 setTimeout(() => card.remove(), 500);
+                visibleEventIds.delete(eventId);
             };
         }
     }
 
-    // Sort event cards by most recent alert
-    function sortEventCardsByAlertTime() {
+    // Sort event cards: +EV or 0% EV cards at the top, then by most recent alert
+    function sortEventCardsByEvAndAlertTime() {
         const cards = [...oddsDisplayArea.querySelectorAll('.event-container:not(.dismissed)')];
         cards.sort((a, b) => {
+            // +EV or 0% at top
+            const aHasPosEv = !!a.querySelector('.positive-ev');
+            const bHasPosEv = !!b.querySelector('.positive-ev');
+            if (aHasPosEv !== bHasPosEv) return bHasPosEv - aHasPosEv;
+            // Then by alert time (descending)
             const aTime = parseFloat(a.querySelector('.event-time-since').getAttribute('data-timestamp')) || 0;
             const bTime = parseFloat(b.querySelector('.event-time-since').getAttribute('data-timestamp')) || 0;
             return bTime - aTime;
@@ -319,6 +376,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
             localStorage.setItem('dismissedEventIds', JSON.stringify(Array.from(dismissedEventIds)));
+            visibleEventIds.clear();
             if (currentSignature === lastDataSignature) {
                 setStatus('connected', 'Live (No Changes)');
                 return;
@@ -334,16 +392,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (eventId && !receivedEventIds.has(eventId)) {
                     card.classList.add('dismissed');
                     setTimeout(() => card.remove(), 500);
+                    visibleEventIds.delete(eventId);
                 }
             });
             // Create/update cards for each event
-            // Sort by most recent alert
-            const sortedEntries = Object.entries(eventsData).sort(([, a], [, b]) => (b.alert_arrival_timestamp || 0) - (a.alert_arrival_timestamp || 0));
+            // Sort by +EV or 0% EV, then most recent alert
+            const sortedEntries = Object.entries(eventsData).sort(([, a], [, b]) => {
+                // +EV or 0% at top
+                const aHasPosEv = (a.markets || []).some(m => parseFloat(m.ev) >= 0);
+                const bHasPosEv = (b.markets || []).some(m => parseFloat(m.ev) >= 0);
+                if (aHasPosEv !== bHasPosEv) return bHasPosEv - aHasPosEv;
+                // Then by alert time (descending)
+                return (b.alert_arrival_timestamp || 0) - (a.alert_arrival_timestamp || 0);
+            });
             for (const [eventId, eventData] of sortedEntries) {
                 createOrUpdateEventCard(eventId, eventData);
             }
             // Sort event cards in DOM
-            sortEventCardsByAlertTime();
+            sortEventCardsByEvAndAlertTime();
         } catch (error) {
             console.error("[Realtime.js] Error refreshing:", error);
             if (mainLoadingMessage) mainLoadingMessage.textContent = `Error: ${error.message}`;
@@ -353,4 +419,24 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial fetch and start refresh interval
     fetchAndRefresh();
     setInterval(fetchAndRefresh, REFRESH_INTERVAL_MS);
+
+    function dismissEventBackend(eventId) {
+        fetch('/dismiss_event', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ eventId })
+        }).catch(() => {});
+    }
+
+    function autoDismissCard() {
+        // 'this' should be bound to the card element
+        const card = this;
+        const eventId = card.id?.replace('event-', '');
+        if (!eventId) return;
+        dismissedEventIds.add(eventId);
+        localStorage.setItem('dismissedEventIds', JSON.stringify(Array.from(dismissedEventIds)));
+        card.classList.add('dismissed');
+        setTimeout(() => card.remove(), 500);
+        visibleEventIds.delete(eventId);
+    }
 });
