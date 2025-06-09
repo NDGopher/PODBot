@@ -2,26 +2,29 @@ from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 import json
 import time
-import math
-from datetime import datetime, timedelta
 import threading
 import traceback
 import os
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE_PATH = os.path.join(SCRIPT_DIR, 'config.json')
+try:
+    from utils import process_event_odds_for_display
+    print("[Server] 'process_event_odds_for_display' from utils loaded.")
+except ImportError:
+    print("[Server] WARNING: Could not import from utils.py.")
+    def process_event_odds_for_display(data):
+        return data
 
 try:
     from pinnacle_fetcher import fetch_live_pinnacle_event_odds
 except ImportError:
-    print("ERROR: pinnacle_fetcher.py not found. Using dummy function.")
+    print("ERROR: pinnacle_fetcher.py not found.")
     def fetch_live_pinnacle_event_odds(event_id):
         return {"success": False, "error": "pinnacle_fetcher.py missing", "data": None}
 
 try:
     from main_logic import process_alert_and_scrape_betbck
     MAIN_LOGIC_AVAILABLE = True
-    print("[Server] main_logic.py and process_alert_and_scrape_betbck loaded successfully.")
+    print("[Server] main_logic.py loaded successfully.")
 except Exception as e:
     print(f"[Server] ERROR during import of main_logic: {e}")
     traceback.print_exc()
@@ -36,42 +39,6 @@ active_events_data_store = {}
 EVENT_DATA_EXPIRY_SECONDS = 180
 BACKGROUND_REFRESH_INTERVAL_SECONDS = 10
 
-def decimal_to_american(decimal_odds):
-    if decimal_odds is None or not isinstance(decimal_odds, (float, int)): return "N/A"
-    if decimal_odds <= 1.0001: return "N/A"
-    if decimal_odds >= 2.0: return f"+{int(round((decimal_odds - 1) * 100))}"
-    return f"{int(round(-100 / (decimal_odds - 1)))}"
-
-def process_event_odds_for_display(pinnacle_event_json_data): 
-    from utils import calculate_nvp_for_market, decimal_to_american # Assuming these are correctly in utils.py
-    if not pinnacle_event_json_data or 'data' not in pinnacle_event_json_data: return {"error": "Invalid or missing 'data'", "success": False, "data": {}}
-    event_detail = pinnacle_event_json_data.get('data', {})
-    if not isinstance(event_detail, dict): return {"error": "'data' field not a dict", "success": False, "data": {}}
-    periods = event_detail.get("periods", {})
-    for period_key, period_data in periods.items():
-        if not isinstance(period_data, dict): continue
-        if period_data.get("money_line") and isinstance(period_data["money_line"], dict):
-            ml = period_data["money_line"]
-            odds = [ml.get("home"), ml.get("draw"), ml.get("away")]
-            nvps = calculate_nvp_for_market(odds)
-            ml["nvp_home"], ml["nvp_draw"], ml["nvp_away"] = (nvps[0] if len(nvps)>0 else None), (nvps[1] if len(nvps)>1 else None), (nvps[2] if len(nvps)>2 else None)
-            for k in ["home", "draw", "away"]: ml[f"american_{k}"]=decimal_to_american(ml.get(k)); ml[f"nvp_american_{k}"]=decimal_to_american(ml.get(f"nvp_{k}"))
-        if period_data.get("spreads") and isinstance(period_data["spreads"], dict):
-            for hdp_key, spread_details in period_data["spreads"].items():
-                if isinstance(spread_details, dict):
-                    if "hdp" not in spread_details: spread_details["hdp"] = hdp_key
-                    odds=[spread_details.get("home"),spread_details.get("away")]; nvps=calculate_nvp_for_market(odds)
-                    spread_details["nvp_home"],spread_details["nvp_away"]=(nvps[0]if len(nvps)>0 else None),(nvps[1]if len(nvps)>1 else None)
-                    for k in ["home","away"]: spread_details[f"american_{k}"]=decimal_to_american(spread_details.get(k)); spread_details[f"nvp_american_{k}"]=decimal_to_american(spread_details.get(f"nvp_{k}"))
-        if period_data.get("totals") and isinstance(period_data["totals"], dict):
-            for points_key, total_details in period_data["totals"].items():
-                if isinstance(total_details, dict):
-                    if "points" not in total_details: total_details["points"] = points_key
-                    odds=[total_details.get("over"),total_details.get("under")]; nvps=calculate_nvp_for_market(odds)
-                    total_details["nvp_over"],total_details["nvp_under"]=(nvps[0]if len(nvps)>0 else None),(nvps[1]if len(nvps)>1 else None)
-                    for k in ["over","under"]: total_details[f"american_{k}"]=decimal_to_american(total_details.get(k)); total_details[f"nvp_american_{k}"]=decimal_to_american(total_details.get(f"nvp_{k}"))
-    return pinnacle_event_json_data
-
 def background_event_refresher():
     print(f"[BackgroundRefresher] Thread started. Interval: {BACKGROUND_REFRESH_INTERVAL_SECONDS}s")
     while True:
@@ -80,7 +47,8 @@ def background_event_refresher():
         for event_id_str in list(active_events_data_store.keys()):
             try:
                 entry = active_events_data_store.get(event_id_str)
-                if not entry: continue
+                if not entry:
+                    continue
 
                 pinnacle_api_result = fetch_live_pinnacle_event_odds(str(event_id_str))
                 if pinnacle_api_result and pinnacle_api_result.get("success") and pinnacle_api_result.get("data"):
@@ -88,12 +56,6 @@ def background_event_refresher():
                     if event_id_str in active_events_data_store:
                         active_events_data_store[event_id_str]["last_pinnacle_data_update_timestamp"] = now
                         active_events_data_store[event_id_str]["pinnacle_processed_data"] = live_pinnacle_odds_processed
-                        
-                        betbck_data = entry.get("betbck_comparison_data")
-                        if betbck_data and betbck_data.get("status") == "success": # Defensive check
-                            re_analyzed_result = process_alert_and_scrape_betbck(event_id_str, entry["original_alert_details"], live_pinnacle_odds_processed, scrape_betbck=False)
-                            if any(float(bet.get("ev", "0%").strip('%')) > 0 for bet in re_analyzed_result.get("data", {}).get("potential_bets_analyzed", [])):
-                                active_events_data_store[event_id_str]['has_ever_been_positive_ev'] = True
 
                 betbck_data = entry.get("betbck_comparison_data")
                 if betbck_data and betbck_data.get("status") == "success":
@@ -101,8 +63,11 @@ def background_event_refresher():
                     if (now - last_scrape_time) > 60:
                         print(f"[BackgroundRefresher] Re-scraping BetBCK for event {event_id_str}...")
                         active_events_data_store[event_id_str]['is_past_initial_view_period'] = True
-                        
-                        refreshed_betbck_result = process_alert_and_scrape_betbck(event_id_str, entry["original_alert_details"], entry["pinnacle_processed_data"])
+                        refreshed_betbck_result = process_alert_and_scrape_betbck(
+                            event_id_str,
+                            entry["original_alert_details"],
+                            entry["pinnacle_processed_data"]
+                        )
                         if event_id_str in active_events_data_store:
                             refreshed_betbck_result["scrape_timestamp"] = now
                             active_events_data_store[event_id_str]["betbck_comparison_data"] = refreshed_betbck_result
@@ -118,8 +83,9 @@ def handle_pod_alert():
     try:
         payload = request.json
         event_id = payload.get("eventId")
-        if not event_id: return jsonify({"status": "error", "message": "Missing eventId"}), 400
-        
+        if not event_id:
+            return jsonify({"status": "error", "message": "Missing eventId"}), 400
+
         event_id_str = str(event_id)
         now = time.time()
         print(f"\n[Server-PodAlert] Received alert for Event ID: {event_id_str} ({payload.get('homeTeam','?')})")
@@ -127,11 +93,7 @@ def handle_pod_alert():
         pinnacle_api_result = fetch_live_pinnacle_event_odds(event_id_str)
         live_pinnacle_odds_processed = process_event_odds_for_display(pinnacle_api_result.get("data") if pinnacle_api_result else {})
 
-        if event_id_str in active_events_data_store:
-            print(f"[Server-PodAlert] Updating existing event {event_id_str}.")
-            active_events_data_store[event_id_str]["last_pinnacle_data_update_timestamp"] = now
-            active_events_data_store[event_id_str]["pinnacle_processed_data"] = live_pinnacle_odds_processed
-        else:
+        if event_id_str not in active_events_data_store:
             print(f"[Server-PodAlert] New event {event_id_str}. Storing initial details and initiating scrape.")
             active_events_data_store[event_id_str] = {
                 "alert_arrival_timestamp": now,
@@ -142,29 +104,35 @@ def handle_pod_alert():
                 'has_ever_been_positive_ev': False,
                 'is_past_initial_view_period': False
             }
-            
-            if MAIN_LOGIC_AVAILABLE:
-                betbck_result = process_alert_and_scrape_betbck(
-                    event_id_str, 
-                    active_events_data_store[event_id_str]["original_alert_details"],
-                    live_pinnacle_odds_processed
-                )
-                
-                status_msg = betbck_result.get('status','N/A')
-                print(f"[Server-PodAlert] main_logic BetBCK result status for {event_id_str}: {status_msg}")
+        else:
+            print(f"[Server-PodAlert] Updating existing event {event_id_str}.")
+            active_events_data_store[event_id_str]["last_pinnacle_data_update_timestamp"] = now
+            active_events_data_store[event_id_str]["pinnacle_processed_data"] = live_pinnacle_odds_processed
 
-                if status_msg == "error_betbck_scrape_failed":
-                    print(f"[Server-PodAlert] Scrape failed for event {event_id_str}. Removing from display.")
-                    if event_id_str in active_events_data_store: del active_events_data_store[event_id_str]
-                else:
-                    betbck_result["scrape_timestamp"] = now
-                    if event_id_str in active_events_data_store:
-                        active_events_data_store[event_id_str]["betbck_comparison_data"] = betbck_result
-                        potential_bets = betbck_result.get("data", {}).get("potential_bets_analyzed", [])
-                        if any(float(bet.get("ev", "0%").strip('%')) > 0 for bet in potential_bets):
-                            print(f"[Server-PodAlert] Initial +EV found for event {event_id_str}.")
-                            active_events_data_store[event_id_str]['has_ever_been_positive_ev'] = True
-        
+        if MAIN_LOGIC_AVAILABLE:
+            betbck_result = process_alert_and_scrape_betbck(
+                event_id_str,
+                active_events_data_store[event_id_str]["original_alert_details"],
+                live_pinnacle_odds_processed
+            )
+            
+            status_msg = betbck_result.get('status')
+            print(f"[Server-PodAlert] main_logic BetBCK result status for {event_id_str}: {status_msg}")
+
+            if status_msg == "success":
+                print(f"[Server-PodAlert] Scrape SUCCESSFUL for {event_id_str}. Storing BetBCK data.")
+                betbck_result["scrape_timestamp"] = now
+                if event_id_str in active_events_data_store:
+                    active_events_data_store[event_id_str]["betbck_comparison_data"] = betbck_result
+                    potential_bets = betbck_result.get("data", {}).get("potential_bets_analyzed", [])
+                    if any(float(bet.get("ev", "0%").strip('%')) > 0 for bet in potential_bets):
+                        print(f"[Server-PodAlert] Initial +EV found for event {event_id_str}.")
+                        active_events_data_store[event_id_str]['has_ever_been_positive_ev'] = True
+            else:
+                print(f"[Server-PodAlert] Scrape FAILED for event {event_id_str}. Removing from display.")
+                if event_id_str in active_events_data_store:
+                    del active_events_data_store[event_id_str]
+
         return jsonify({"status": "success", "message": f"Alert for {event_id_str} processed."}), 200
 
     except Exception as e:
@@ -180,38 +148,20 @@ def get_active_events_data():
     current_time_sec = time.time()
     data_to_send_to_client = {}
     expired_ids = []
-    betbck_main_url = None
-    try:
-        with open(CONFIG_FILE_PATH, 'r') as f:
-            config_data = json.load(f)
-        betbck_main_url = config_data.get('betbck', {}).get('main_page_url_after_login')
-    except Exception as e:
-        print(f"[Server-ActiveEvents] Error reading config for BetBCK URL: {e}")
-
     for eid, entry in list(active_events_data_store.items()):
         if (current_time_sec - entry.get("alert_arrival_timestamp", 0)) > EVENT_DATA_EXPIRY_SECONDS:
             expired_ids.append(eid)
             continue
-
         is_past_initial_period = entry.get('is_past_initial_view_period', False)
         has_been_positive = entry.get('has_ever_been_positive_ev', False)
-
         if is_past_initial_period and not has_been_positive:
             print(f"[Server-ActiveEvents] Hiding event {eid} (past initial view and no +EV).")
             continue
-
-        data_to_send_to_client[eid] = {
-            "pinnacle_data_processed": entry.get("pinnacle_processed_data"),
-            "alert_trigger_details": entry.get("original_alert_details", {}),
-            "betbck_data": entry.get("betbck_comparison_data"),
-            "alert_arrival_timestamp": entry.get("alert_arrival_timestamp"),
-            "pinnacle_last_update_for_display": entry.get("last_pinnacle_data_update_timestamp"),
-            "betbck_main_page_url": betbck_main_url,
-            "betbck_search_term_used": entry.get("original_alert_details", {}).get("betbck_search_term_used")
-        }
+        data_to_send_to_client[eid] = entry
     for eid in expired_ids:
-        if eid in active_events_data_store: del active_events_data_store[eid]
-    
+        if eid in active_events_data_store:
+            del active_events_data_store[eid]
+            print(f"[Server-ActiveEvents] Removed expired event {eid}.")
     return jsonify(data_to_send_to_client)
 
 @app.route('/get_market_details')
@@ -276,11 +226,11 @@ def get_market_details():
 
 @app.route('/')
 @app.route('/odds_table')
-def odds_table_page_route(): 
+def odds_table_page_route():
     return render_template('realtime.html')
 
 if __name__ == '__main__':
-    print("Starting Python Flask server for POD Automation (v2.3 - Final Stability Fix)...")
+    print("Starting Python Flask server for POD Automation...")
     refresher_thread = threading.Thread(target=background_event_refresher, daemon=True)
     refresher_thread.start()
     app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=False)

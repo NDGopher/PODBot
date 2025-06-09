@@ -113,6 +113,7 @@ def normalize_team_name_for_matching(name):
         if norm_name.startswith(prefix): norm_name = norm_name[len(prefix):].strip(); break
     if "tottenham hotspur" == name.lower(): norm_name = "tottenham" 
     elif "paris saint germain" in norm_name: norm_name = "psg" 
+    elif "czechia" in norm_name: norm_name = "czech republic" 
     elif "new york" in norm_name: norm_name = norm_name.replace("new york", "ny")
     norm_name = re.sub(r'\s+(fc|sc|cf)$', '', norm_name).strip()
     norm_name = re.sub(r'^[^\w]*(.*?)[^\w]*$', r'\1', norm_name) 
@@ -187,11 +188,6 @@ def normalize_asian_handicap(line_str_input): # CORRECTED STRUCTURE
     except ValueError:
         return line_str_input
 
-# --- (Rest of your helper functions: extract_line_value_from_text, extract_american_odds_from_text, 
-#      extract_all_spread_options_from_text, get_cleaned_team_name_from_div,
-#      parse_specific_game_from_search_html, scrape_betbck_for_game) ---
-# Ensure these functions call the corrected normalize_asian_handicap if they use it.
-# The versions from my response "May 19, 2025 at 01:04 PM CDT" for these should be suitable.
 def extract_line_value_from_text(text_content_or_td_element, market_type="Spread"):
     global market_type_context_for_normalization; market_type_context_for_normalization = market_type
     if not text_content_or_td_element: return None
@@ -388,5 +384,3 @@ def scrape_betbck_for_game(pod_home_team, pod_away_team, search_team_name_betbck
     if parsed_game_data: print(f"[BetbckScraper-CORE] Scraper returned parsed game data.")
     else: print(f"[BetbckScraper-CORE] Scraper did NOT find or parse specific game from HTML.")
     return parsed_game_data
-
-# (No if __name__ == "__main__" block needed for a module)
