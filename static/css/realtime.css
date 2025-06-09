@@ -191,12 +191,12 @@ td.col-ev {
 .negative-ev td.col-ev { color: var(--negative-ev-text); }
 
 .flash-yellow {
-    animation: flashYellowAnimation 1.5s;
+    animation: flashYellowAnimation 2s;
 }
 
 @keyframes flashYellowAnimation {
     0%, 100% { background-color: transparent; }
-    50% { background-color: rgba(245, 158, 11, 0.3); }
+    50% { background-color: rgba(245, 221, 66, 0.85); }
 }
 
 @media (max-width: 768px) {
@@ -204,3 +204,12 @@ td.col-ev {
     #oddsDisplayArea { grid-template-columns: 1fr; }
     .main-header { flex-direction: column; align-items: flex-start; gap: 1rem; }
 }
+
+.markets-table-container tr:nth-child(even) {
+    background: #f8f8f8;
+}
+.markets-table-container tr:nth-child(even) td {
+    color: #1a237e;
+}
+
+.markets-table-container tr:hover { background: #e3eafc; color: #1a237e; }
