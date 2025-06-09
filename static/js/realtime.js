@@ -127,6 +127,18 @@ document.addEventListener('DOMContentLoaded', () => {
         return name.replace(/(MLB|NBA|NFL|NHL|NCAAF|NCAAB|FIFA)$/i, '').trim();
     }
 
+    // Helper to get league emoji
+    function getLeagueEmoji(metaInfo) {
+        if (!metaInfo) return '';
+        const league = metaInfo.toLowerCase();
+        if (league.includes('mlb')) return '⚾';
+        if (league.includes('nba')) return '🏀';
+        if (league.includes('nhl') || league.includes('hockey')) return '🏒';
+        if (league.includes('soccer') || league.includes('fifa') || league.includes('football')) return '⚽';
+        if (league.includes('nfl')) return '🏈';
+        return '';
+    }
+
     function renderRow(market) {
         const row = document.createElement('tr');
         
@@ -176,7 +188,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         // Update header info
-        card.querySelector('.event-title').textContent = eventData.title;
+        const leagueEmoji = getLeagueEmoji(eventData.meta_info);
+        card.querySelector('.event-title').textContent = `${leagueEmoji ? leagueEmoji + ' ' : ''}${eventData.title}`;
         card.querySelector('.event-meta-info').textContent = eventData.meta_info;
         card.querySelector('.event-last-update').textContent = `Odds Updated: ${timeSince(eventData.last_update)}`;
         card.querySelector('.event-time-since').textContent = `Alert ${timeSince(eventData.alert_arrival_timestamp)}`;
@@ -195,15 +208,10 @@ document.addEventListener('DOMContentLoaded', () => {
         tbody.innerHTML = '';
         let hasPositiveEV = false;
         let markets = eventData.markets && Array.isArray(eventData.markets) ? [...eventData.markets] : [];
-        // Sorting support
-        if (card.sortByEvDesc === undefined) card.sortByEvDesc = true;
-        if (markets.length > 1 && card.sortedByEv) {
-            markets.sort((a, b) => {
-                const evA = parseFloat(a.ev) || -Infinity;
-                const evB = parseFloat(b.ev) || -Infinity;
-                return card.sortByEvDesc ? evB - evA : evA - evB;
-            });
-        }
+        // Auto-sort by EV descending by default
+        markets.sort((a, b) => (parseFloat(b.ev) || -Infinity) - (parseFloat(a.ev) || -Infinity));
+        card.sortedByEv = true;
+        card.sortByEvDesc = true;
         markets.forEach(market => {
             if (!market.betbck_odds || market.betbck_odds === 'N/A') return; // Only show rows with BetBCK odds
             const row = document.createElement('tr');
@@ -251,9 +259,24 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             evHeader.hasSortListener = true;
         }
-        // Auto-dismiss after 1 minute if no positive EV
-        if (!hasPositiveEV) {
-            setTimeout(() => {
+        // Auto-dismiss logic
+        if (card.dismissTimeout) clearTimeout(card.dismissTimeout);
+        if (card.betbckRefreshTimeout) clearTimeout(card.betbckRefreshTimeout);
+        if (hasPositiveEV) {
+            // Refresh BetBCK odds after 1 minute
+            card.betbckRefreshTimeout = setTimeout(() => {
+                fetchAndRefresh();
+            }, 60000);
+            // Dismiss after 3 minutes
+            card.dismissTimeout = setTimeout(() => {
+                if (document.body.contains(card)) {
+                    card.classList.add('dismissed');
+                    setTimeout(() => card.remove(), 500);
+                }
+            }, 180000);
+        } else {
+            // Dismiss after 1 minute if no positive EV
+            card.dismissTimeout = setTimeout(() => {
                 if (document.body.contains(card)) {
                     card.classList.add('dismissed');
                     setTimeout(() => card.remove(), 500);
@@ -272,12 +295,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function sortCardsByEv() {
+    // Sort event cards by most recent alert
+    function sortEventCardsByAlertTime() {
         const cards = [...oddsDisplayArea.querySelectorAll('.event-container:not(.dismissed)')];
         cards.sort((a, b) => {
-            const evA = parseFloat(a.dataset.maxEv) || -Infinity;
-            const evB = parseFloat(b.dataset.maxEv) || -Infinity;
-            return evB - evA;
+            const aTime = parseFloat(a.querySelector('.event-time-since').getAttribute('data-timestamp')) || 0;
+            const bTime = parseFloat(b.querySelector('.event-time-since').getAttribute('data-timestamp')) || 0;
+            return bTime - aTime;
         });
         cards.forEach(card => oddsDisplayArea.appendChild(card));
     }
@@ -286,10 +310,8 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const response = await fetch('/get_active_events_data', { mode: 'cors' });
             if (!response.ok) throw new Error(`HTTP error ${response.status}: ${await response.text()}`);
-            
             const eventsData = await response.json();
             const currentSignature = JSON.stringify(eventsData);
-
             // Remove dismissed IDs that are no longer in the feed (so new alerts can show up)
             for (const eventId of Array.from(dismissedEventIds)) {
                 if (!(eventId in eventsData)) {
@@ -297,21 +319,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
             localStorage.setItem('dismissedEventIds', JSON.stringify(Array.from(dismissedEventIds)));
-
             if (currentSignature === lastDataSignature) {
                 setStatus('connected', 'Live (No Changes)');
                 return;
             }
-            
             lastDataSignature = currentSignature;
             setStatus('connected', 'Live (Updated)');
-            
-            // Show/hide loading message
             if (mainLoadingMessage) {
                 mainLoadingMessage.style.display = Object.keys(eventsData).length === 0 ? 'block' : 'none';
             }
-
-            // Remove expired cards
             const receivedEventIds = new Set(Object.keys(eventsData));
             [...oddsDisplayArea.children].forEach(card => {
                 const eventId = card.id?.replace('event-', '');
@@ -320,15 +336,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     setTimeout(() => card.remove(), 500);
                 }
             });
-
             // Create/update cards for each event
-            for (const [eventId, eventData] of Object.entries(eventsData)) {
+            // Sort by most recent alert
+            const sortedEntries = Object.entries(eventsData).sort(([, a], [, b]) => (b.alert_arrival_timestamp || 0) - (a.alert_arrival_timestamp || 0));
+            for (const [eventId, eventData] of sortedEntries) {
                 createOrUpdateEventCard(eventId, eventData);
             }
-
+            // Sort event cards in DOM
+            sortEventCardsByAlertTime();
         } catch (error) {
-            console.error("Error refreshing events:", error);
-            setStatus('disconnected', 'Connection Error');
+            console.error("[Realtime.js] Error refreshing:", error);
+            if (mainLoadingMessage) mainLoadingMessage.textContent = `Error: ${error.message}`;
         }
     }
     
