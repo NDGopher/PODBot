@@ -30,6 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Track previous odds for flashing
     let previousOdds = {};
+    let alertedEvMarkets = new Set(); // Track alerted +EV markets
 
     function setStatus(state, message) {
         statusIndicator.className = `status-${state}`;
@@ -79,41 +80,71 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        const popup = window.open('', popupKey, `width=450,height=350,scrollbars=yes,resizable=yes`);
+        const popup = window.open('', popupKey, `width=500,height=500,scrollbars=yes,resizable=yes`);
         if (!popup) {
             console.warn("Popup blocked by browser.");
             return;
         }
         window.openedEvPopups[popupKey] = popup;
 
+        let lastOdds = { bck: bckDisplay, pin: pinNvpDisplay };
+
         function updatePopup() {
             fetch(`/get_active_events_data`, { mode: 'cors' })
                 .then(response => response.json())
                 .then(data => {
                     const event = data[eventId];
+                    let market = null;
                     if (event) {
-                        const market = event.markets.find(m => m.market === marketType && m.selection === selectionName && m.line === lineDisplay);
-                        if (market) {
-                            popup.document.body.innerHTML = `
-                                <style>
-                                    body { font-family: system-ui, sans-serif; background-color: #1f2937; color: #f9fafb; padding: 20px; }
-                                    h3 { color: #3b82f6; }
-                                    p { margin: 8px 0; line-height: 1.5; }
-                                    strong { color: #9ca3af; }
-                                    .ev-value { color: #22c55e; font-weight: bold; font-size: 1.2em; }
-                                </style>
-                                <h3>Positive EV Opportunity!</h3>
-                                <p><strong>Event:</strong> ${homeTeam} vs ${awayTeam}</p>
-                                <p><strong>Period:</strong> ${periodName}</p>
-                                <hr>
-                                <p><strong>Market:</strong> ${marketType}</p>
-                                <p><strong>Selection:</strong> ${selectionName} ${lineDisplay}</p>
-                                <p><strong>BetBCK Odds:</strong> ${market.betbck_odds || 'N/A'}</p>
-                                <p><strong>Pinnacle NVP:</strong> ${market.pinnacle_nvp || 'N/A'}</p>
-                                <p class="ev-value">EV: ${market.ev || 'N/A'}</p>
-                            `;
-                        }
+                        market = event.markets.find(m => m.market === marketType && m.selection === selectionName && m.line === lineDisplay);
                     }
+                    let oddsWarning = '';
+                    let bckOdds = market ? market.betbck_odds : lastOdds.bck;
+                    let pinOdds = market ? market.pinnacle_nvp : lastOdds.pin;
+                    let evVal = market ? market.ev : evDisplay;
+                    // Confirm odds
+                    if (market) {
+                        if (parseFloat(bckOdds) <= parseFloat(pinOdds)) {
+                            oddsWarning = '<div style="color:#ef4444; font-weight:bold;">Warning: BetBCK odds are no longer better than Pinnacle NVP!</div>';
+                        }
+                        lastOdds = { bck: bckOdds, pin: pinOdds };
+                    }
+                    popup.document.body.innerHTML = `
+                        <style>
+                            body { font-family: system-ui, sans-serif; background-color: #1f2937; color: #f9fafb; padding: 20px; }
+                            h3 { color: #3b82f6; }
+                            p { margin: 8px 0; line-height: 1.5; }
+                            strong { color: #9ca3af; }
+                            .ev-value { color: #22c55e; font-weight: bold; font-size: 1.2em; }
+                            .bet-btn { background: #3b82f6; color: #fff; border: none; border-radius: 6px; padding: 0.5em 1.2em; font-size: 1.1em; cursor: pointer; margin-top: 10px; }
+                            .bet-btn:disabled { background: #888; cursor: not-allowed; }
+                            .odds-warning { color: #ef4444; font-weight: bold; }
+                            .bet-amount-input { width: 80px; font-size: 1.1em; margin-left: 8px; }
+                        </style>
+                        <h3>Positive EV Opportunity!</h3>
+                        <p><strong>Event:</strong> ${homeTeam} vs ${awayTeam}</p>
+                        <p><strong>Period:</strong> ${periodName}</p>
+                        <hr>
+                        <p><strong>Market:</strong> ${marketType}</p>
+                        <p><strong>Selection:</strong> ${selectionName} ${lineDisplay}</p>
+                        <p><strong>BetBCK Odds:</strong> <span id='bck-odds'>${bckOdds || 'N/A'}</span></p>
+                        <p><strong>Pinnacle NVP:</strong> <span id='pin-odds'>${pinOdds || 'N/A'}</span></p>
+                        <p class="ev-value">EV: ${evVal || 'N/A'}</p>
+                        ${oddsWarning}
+                        <div style='margin-top:16px;'>
+                            <label for='bet-amount'><strong>Bet Amount:</strong></label>
+                            <input id='bet-amount' class='bet-amount-input' type='number' min='1' placeholder='Amount'>
+                            <button id='betbck-btn' class='bet-btn'>Bet on BetBCK</button>
+                        </div>
+                        <div style='margin-top:10px; color:#9ca3af; font-size:0.95em;'>BetBCK integration coming soon: This will inject your bet directly to the BetBCK page.</div>
+                    `;
+                    // Add button handler
+                    popup.document.getElementById('betbck-btn').onclick = function() {
+                        const amount = popup.document.getElementById('bet-amount').value;
+                        // Placeholder: Open BetBCK and inject payload (to be implemented)
+                        window.open('https://betbck.com/', '_blank');
+                        alert('In the future, this will inject your bet directly to BetBCK!\nAmount: ' + amount);
+                    };
                 })
                 .catch(() => popup.close());
         }
@@ -407,6 +438,35 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             for (const [eventId, eventData] of sortedEntries) {
                 createOrUpdateEventCard(eventId, eventData);
+                // Check for new +EV markets
+                if (eventData.markets && Array.isArray(eventData.markets)) {
+                    eventData.markets.forEach(market => {
+                        if (!market.betbck_odds || market.betbck_odds === 'N/A') return;
+                        const ev = parseFloat(market.ev);
+                        if (!isNaN(ev) && ev >= POSITIVE_EV_THRESHOLD) {
+                            // Unique key for this market
+                            const marketKey = `${eventId}|${market.market}|${market.selection}|${market.line}`;
+                            if (!alertedEvMarkets.has(marketKey)) {
+                                alertedEvMarkets.add(marketKey);
+                                // Prepare details for popup
+                                const marketDetails = {
+                                    selectionName: market.selection,
+                                    lineDisplay: market.line,
+                                    marketType: market.market,
+                                    bckDisplay: market.betbck_odds,
+                                    pinNvpDisplay: market.pinnacle_nvp,
+                                    evDisplay: market.ev
+                                };
+                                showPositiveEvPopup({
+                                    eventId,
+                                    homeTeam: eventData.title.split(' vs ')[0],
+                                    awayTeam: eventData.title.split(' vs ')[1],
+                                    periodName: eventData.alert_meta || '',
+                                }, marketDetails);
+                            }
+                        }
+                    });
+                }
             }
             // Sort event cards in DOM
             sortEventCardsByEvAndAlertTime();

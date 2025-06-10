@@ -16,6 +16,7 @@ app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 active_events_data_store = {}
 EVENT_DATA_EXPIRY_SECONDS = 300
 BACKGROUND_REFRESH_INTERVAL_SECONDS = 3
+dismissed_event_ids = set()
 
 def background_event_refresher():
     while True:
@@ -23,8 +24,14 @@ def background_event_refresher():
             time.sleep(BACKGROUND_REFRESH_INTERVAL_SECONDS)
             current_time = time.time()
             for event_id, event_data in list(active_events_data_store.items()):
+                if event_id in dismissed_event_ids:
+                    del active_events_data_store[event_id]
+                    print(f"[BackgroundRefresher] Removed dismissed Event ID: {event_id}")
+                    continue
                 if (current_time - event_data.get("alert_arrival_timestamp", 0)) > EVENT_DATA_EXPIRY_SECONDS:
                     del active_events_data_store[event_id]
+                    if event_id in dismissed_event_ids:
+                        dismissed_event_ids.remove(event_id)
                     print(f"[BackgroundRefresher] Removed expired Event ID: {event_id}")
                     continue
                 try:
@@ -68,6 +75,7 @@ def handle_pod_alert():
         pod_home_clean = clean_pod_team_name_for_search(payload.get("homeTeam", ""))
         pod_away_clean = clean_pod_team_name_for_search(payload.get("awayTeam", ""))
 
+        betbck_last_update = None
         if event_id_str not in active_events_data_store:
             print(f"[Server-PodAlert] New event {event_id_str}. Initiating scrape.")
             betbck_result = process_alert_and_scrape_betbck(event_id_str, payload, live_pinnacle_odds_processed)
@@ -78,6 +86,7 @@ def handle_pod_alert():
                 return jsonify({"status": "error", "message": f"Scrape failed: {fail_reason}"}), 200
 
             print(f"[Server-PodAlert] Scrape successful. Storing event {event_id_str} for display.")
+            betbck_last_update = now
             active_events_data_store[event_id_str] = {
                 "alert_arrival_timestamp": now,
                 "last_pinnacle_data_update_timestamp": now,
@@ -90,7 +99,8 @@ def handle_pod_alert():
                 "new_odds": payload.get("newOdds", "N/A"),
                 "no_vig": payload.get("noVigPriceFromAlert", "N/A"),
                 "cleaned_home_team": pod_home_clean,
-                "cleaned_away_team": pod_away_clean
+                "cleaned_away_team": pod_away_clean,
+                "betbck_last_update": betbck_last_update
             }
         else:
             print(f"[Server-PodAlert] Updating existing event {event_id_str} with fresh Pinnacle data.")
@@ -113,8 +123,6 @@ def get_active_events_data():
             continue
         bet_data = entry["betbck_data"].get("data", {})
         pinnacle_data = entry["pinnacle_data_processed"].get("data", {})
-        
-        # Use official names from Pinnacle/Swordfish
         home_team = pinnacle_data.get("home", entry["original_alert_details"].get("homeTeam", "Home"))
         away_team = pinnacle_data.get("away", entry["original_alert_details"].get("awayTeam", "Away"))
         league_name = pinnacle_data.get("league_name", entry.get("league_name", "Unknown League"))
@@ -122,145 +130,27 @@ def get_active_events_data():
         if isinstance(start_time, (int, float)) and start_time > 1000000000:
             from datetime import datetime
             start_time = datetime.utcfromtimestamp(start_time/1000).strftime('%Y-%m-%d %H:%M')
-        
-        # Only include Draw for sports that allow it (not baseball)
         allow_draw = False
         if "soccer" in league_name.lower() or "draw" in str(pinnacle_data.get("money_line", {})).lower():
             allow_draw = True
-        
-        # Helper to get BetBCK odds for ML
-        def get_betbck_ml(selection, period="full"):
-            if period == "1h":
-                if selection == home_team:
-                    return bet_data.get('periods', {}).get('1H', {}).get('home', {}).get('moneyline', "N/A")
-                elif selection == away_team:
-                    return bet_data.get('periods', {}).get('1H', {}).get('away', {}).get('moneyline', "N/A")
-                elif selection == "Draw":
-                    return bet_data.get('periods', {}).get('1H', {}).get('draw', {}).get('moneyline', "N/A")
-            else:
-                if selection == home_team:
-                    return bet_data.get('home', {}).get('moneyline', "N/A")
-                elif selection == away_team:
-                    return bet_data.get('away', {}).get('moneyline', "N/A")
-                elif selection == "Draw":
-                    return bet_data.get('draw', {}).get('moneyline', "N/A")
-            return "N/A"
-        
-        # Helper to get BetBCK odds for spreads
-        def get_betbck_spread(selection, line, period="full"):
-            spreads = []
-            if period == "1h":
-                if selection == home_team:
-                    spreads = bet_data.get('periods', {}).get('1H', {}).get('home', {}).get('spreads', [])
-                elif selection == away_team:
-                    spreads = bet_data.get('periods', {}).get('1H', {}).get('away', {}).get('spreads', [])
-            else:
-                if selection == home_team:
-                    spreads = bet_data.get('home', {}).get('spreads', [])
-                elif selection == away_team:
-                    spreads = bet_data.get('away', {}).get('spreads', [])
-            for s in spreads:
-                if str(s.get('line')) == str(line):
-                    return s.get('odds', "N/A")
-            return "N/A"
-        
-        # Helper to get BetBCK odds for totals
-        def get_betbck_total(selection, line, period="full"):
-            totals = []
-            if period == "1h":
-                if selection == "Over":
-                    totals = bet_data.get('periods', {}).get('1H', {}).get('home', {}).get('totals', [])
-                elif selection == "Under":
-                    totals = bet_data.get('periods', {}).get('1H', {}).get('away', {}).get('totals', [])
-            else:
-                if selection == "Over":
-                    totals = bet_data.get('home', {}).get('totals', [])
-                elif selection == "Under":
-                    totals = bet_data.get('away', {}).get('totals', [])
-            for t in totals:
-                if str(t.get('line')).replace('+','') == str(line).replace('+',''):
-                    return t.get('odds', "N/A")
-            return "N/A"
-        
-        def calculate_ev(bet_american, nvp_american):
-            def american_to_decimal(odds):
-                if odds is None or odds == "N/A": return None
-                try:
-                    odds = float(str(odds).replace('PK', '0'))
-                    if odds > 0: return (odds / 100) + 1
-                    return (100 / abs(odds)) + 1
-                except (ValueError, TypeError): return None
-            bet_dec = american_to_decimal(bet_american)
-            nvp_dec = american_to_decimal(nvp_american)
-            if bet_dec and nvp_dec and nvp_dec > 1.0:
-                ev = (bet_dec / nvp_dec) - 1
-                if -0.5 < ev < 0.20:
-                    return f"{ev*100:.2f}%"
-            return "N/A"
-        
-        # Build markets array
+        # Use analyzed potential bets if present
         markets = []
-        # Moneyline
-        ml_home_bck = get_betbck_ml(home_team)
-        ml_away_bck = get_betbck_ml(away_team)
-        periods = pinnacle_data.get("periods", {})
-        num_0 = periods.get("num_0", {})
-        money_line = num_0.get("money_line") or {}
-        ml_home_nvp = money_line.get("nvp_american_home", "N/A")
-        ml_away_nvp = money_line.get("nvp_american_away", "N/A")
-        if ml_home_bck != "N/A":
-            markets.append({"market": "ML", "selection": home_team, "line": "", "pinnacle_nvp": ml_home_nvp, "betbck_odds": ml_home_bck, "ev": calculate_ev(ml_home_bck, ml_home_nvp)})
-        if ml_away_bck != "N/A":
-            markets.append({"market": "ML", "selection": away_team, "line": "", "pinnacle_nvp": ml_away_nvp, "betbck_odds": ml_away_bck, "ev": calculate_ev(ml_away_bck, ml_away_nvp)})
-        if allow_draw:
-            ml_draw_bck = get_betbck_ml("Draw")
-            ml_draw_nvp = money_line.get("nvp_american_draw", "N/A")
-            if ml_draw_bck != "N/A":
-                markets.append({"market": "ML", "selection": "Draw", "line": "", "pinnacle_nvp": ml_draw_nvp, "betbck_odds": ml_draw_bck, "ev": calculate_ev(ml_draw_bck, ml_draw_nvp)})
-        # Spreads
-        for line, spread in (pinnacle_data.get("periods", {}).get("num_0", {}).get("spreads", {}) or {}).items():
-            home_bck = get_betbck_spread(home_team, spread.get("hdp"))
-            away_bck = get_betbck_spread(away_team, -spread.get("hdp"))
-            home_nvp = spread.get("nvp_american_home", "N/A")
-            away_nvp = spread.get("nvp_american_away", "N/A")
-            if home_bck != "N/A":
-                markets.append({"market": "Spread", "selection": home_team, "line": str(spread.get("hdp")), "pinnacle_nvp": home_nvp, "betbck_odds": home_bck, "ev": calculate_ev(home_bck, home_nvp)})
-            if away_bck != "N/A":
-                markets.append({"market": "Spread", "selection": away_team, "line": str(-spread.get("hdp")), "pinnacle_nvp": away_nvp, "betbck_odds": away_bck, "ev": calculate_ev(away_bck, away_nvp)})
-        # Totals
-        for line, total in (pinnacle_data.get("periods", {}).get("num_0", {}).get("totals", {}) or {}).items():
-            over_bck = get_betbck_total("Over", total.get("points"))
-            under_bck = get_betbck_total("Under", total.get("points"))
-            over_nvp = total.get("nvp_american_over", "N/A")
-            under_nvp = total.get("nvp_american_under", "N/A")
-            if over_bck != "N/A":
-                markets.append({"market": "Total", "selection": "Over", "line": str(total.get("points")), "pinnacle_nvp": over_nvp, "betbck_odds": over_bck, "ev": calculate_ev(over_bck, over_nvp)})
-            if under_bck != "N/A":
-                markets.append({"market": "Total", "selection": "Under", "line": str(total.get("points")), "pinnacle_nvp": under_nvp, "betbck_odds": under_bck, "ev": calculate_ev(under_bck, under_nvp)})
-        # 1H Spreads
-        for line, spread in (pinnacle_data.get("periods", {}).get("num_1", {}).get("spreads", {}) or {}).items():
-            home_bck = get_betbck_spread(home_team, spread.get("hdp"), period="1h")
-            away_bck = get_betbck_spread(away_team, -spread.get("hdp"), period="1h")
-            home_nvp = spread.get("nvp_american_home", "N/A")
-            away_nvp = spread.get("nvp_american_away", "N/A")
-            if home_bck != "N/A":
-                markets.append({"market": "Spread 1H", "selection": home_team, "line": str(spread.get("hdp")), "pinnacle_nvp": home_nvp, "betbck_odds": home_bck, "ev": calculate_ev(home_bck, home_nvp)})
-            if away_bck != "N/A":
-                markets.append({"market": "Spread 1H", "selection": away_team, "line": str(-spread.get("hdp")), "pinnacle_nvp": away_nvp, "betbck_odds": away_bck, "ev": calculate_ev(away_bck, away_nvp)})
-        # 1H Totals
-        for line, total in (pinnacle_data.get("periods", {}).get("num_1", {}).get("totals", {}) or {}).items():
-            over_bck = get_betbck_total("Over", total.get("points"), period="1h")
-            under_bck = get_betbck_total("Under", total.get("points"), period="1h")
-            over_nvp = total.get("nvp_american_over", "N/A")
-            under_nvp = total.get("nvp_american_under", "N/A")
-            if over_bck != "N/A":
-                markets.append({"market": "Total 1H", "selection": "Over", "line": str(total.get("points")), "pinnacle_nvp": over_nvp, "betbck_odds": over_bck, "ev": calculate_ev(over_bck, over_nvp)})
-            if under_bck != "N/A":
-                markets.append({"market": "Total 1H", "selection": "Under", "line": str(total.get("points")), "pinnacle_nvp": under_nvp, "betbck_odds": under_bck, "ev": calculate_ev(under_bck, under_nvp)})
+        if bet_data.get("potential_bets_analyzed"):
+            for bet in bet_data["potential_bets_analyzed"]:
+                # Map keys to expected frontend format
+                markets.append({
+                    "market": bet.get("market"),
+                    "selection": bet.get("sel", bet.get("selection")),
+                    "line": bet.get("line", ""),
+                    "pinnacle_nvp": bet.get("pin_nvp", "N/A"),
+                    "betbck_odds": bet.get("bck_odds", "N/A"),
+                    "ev": bet.get("ev", "N/A")
+                })
         data_to_send[eid] = {
             "title": f"{home_team} vs {away_team}",
             "meta_info": f"{league_name} | Starts: {start_time}",
             "last_update": entry.get("last_pinnacle_data_update_timestamp", "N/A"),
+            "betbck_last_update": entry.get("betbck_last_update", None),
             "alert_description": entry['original_alert_details'].get("betDescription", "POD Alert Processed"),
             "alert_meta": f"(Alert: {entry['old_odds']} → {entry['new_odds']}, NVP: {entry['no_vig']})",
             "betbck_status": f"Data Fetched: {home_team} vs {away_team}" if entry["betbck_data"].get("status") == "success" else entry["betbck_data"].get("message", "Odds check pending..."),
@@ -277,6 +167,17 @@ def get_active_events_data():
 @app.route('/odds_table')
 def odds_table_page_route():
     return render_template('realtime.html')
+
+@app.route('/dismiss_event', methods=['POST'])
+def dismiss_event():
+    data = request.json
+    event_id = str(data.get('eventId'))
+    if event_id:
+        dismissed_event_ids.add(event_id)
+        if event_id in active_events_data_store:
+            del active_events_data_store[event_id]
+        return jsonify({'status': 'success', 'message': f'Event {event_id} dismissed.'})
+    return jsonify({'status': 'error', 'message': 'No eventId provided.'}), 400
 
 if __name__ == '__main__':
     print("Starting Python Flask server for PODBot...")

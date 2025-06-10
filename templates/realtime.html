@@ -5,6 +5,46 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pinnacle / Buckeye +EV</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/realtime.css') }}">
+    <style>
+        /* Responsive table for odds */
+        .markets-table-container table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 0 auto;
+        }
+        .markets-table-container th, .markets-table-container td {
+            padding: 8px 6px;
+            text-align: center;
+            border-bottom: 1px solid #ddd;
+        }
+        .markets-table-container th {
+            background: #222;
+            color: #fff;
+        }
+        .markets-table-container tr:nth-child(even) { background: #f8f8f8; }
+        .markets-table-container tr:hover { background: #e0e0e0; }
+        .col-ev { font-weight: bold; }
+        @media (max-width: 700px) {
+            .markets-table-container table, .markets-table-container thead, .markets-table-container tbody, .markets-table-container th, .markets-table-container td, .markets-table-container tr {
+                display: block;
+            }
+            .markets-table-container th { position: absolute; left: -9999px; top: -9999px; }
+            .markets-table-container td { border: none; position: relative; padding-left: 50%; }
+            .markets-table-container td:before {
+                position: absolute;
+                left: 6px;
+                top: 8px;
+                white-space: nowrap;
+                font-weight: bold;
+            }
+            .markets-table-container td:nth-of-type(1):before { content: "Market"; }
+            .markets-table-container td:nth-of-type(2):before { content: "Selection"; }
+            .markets-table-container td:nth-of-type(3):before { content: "Line"; }
+            .markets-table-container td:nth-of-type(4):before { content: "Pinnacle NVP"; }
+            .markets-table-container td:nth-of-type(5):before { content: "BetBCK Odds"; }
+            .markets-table-container td:nth-of-type(6):before { content: "EV %"; }
+        }
+    </style>
 </head>
 <body>
     <header class="main-header">
@@ -18,6 +58,7 @@
         <p class="loading" id="mainLoadingMessage">Initializing and waiting for first POD alert...</p>
     </main>
 
+    <!-- Event Card Template for Dynamic Odds Table Rendering -->
     <template id="event-card-template">
         <div class="event-container">
             <header class="event-header">
@@ -40,7 +81,7 @@
             <div class="betbck-status-container"></div>
 
             <div class="markets-table-container">
-                <table>
+                <table aria-label="Odds Table">
                     <thead>
                         <tr>
                             <th>Market</th>
@@ -52,7 +93,8 @@
                         </tr>
                     </thead>
                     <tbody>
-                        </tbody>
+                        <!-- Populated dynamically by realtime.js -->
+                    </tbody>
                 </table>
             </div>
         </div>
