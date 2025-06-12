@@ -7,7 +7,7 @@ import math
 
 from utils import process_event_odds_for_display
 from pinnacle_fetcher import fetch_live_pinnacle_event_odds
-from main_logic import process_alert_and_scrape_betbck, clean_pod_team_name_for_search
+from main_logic import process_alert_and_scrape_betbck, clean_pod_team_name_for_search, american_to_decimal
 
 app = Flask(__name__)
 CORS(app, resources={r"/get_active_events_data": {"origins": "*"}})
@@ -123,6 +123,8 @@ def get_active_events_data():
             continue
         bet_data = entry["betbck_data"].get("data", {})
         pinnacle_data = entry["pinnacle_data_processed"].get("data", {})
+        if not isinstance(pinnacle_data, dict):
+            continue  # Skip this event if pinnacle_data is None or not a dict
         home_team = pinnacle_data.get("home", entry["original_alert_details"].get("homeTeam", "Home"))
         away_team = pinnacle_data.get("away", entry["original_alert_details"].get("awayTeam", "Away"))
         league_name = pinnacle_data.get("league_name", entry.get("league_name", "Unknown League"))
@@ -134,17 +136,75 @@ def get_active_events_data():
         if "soccer" in league_name.lower() or "draw" in str(pinnacle_data.get("money_line", {})).lower():
             allow_draw = True
         # Use analyzed potential bets if present
+        # Initialize markets and re-analyze with latest pinnacle data
         markets = []
         if bet_data.get("potential_bets_analyzed"):
+            # Reanalyze with latest pinnacle data to ensure values are up-to-date
             for bet in bet_data["potential_bets_analyzed"]:
+                market_type = bet.get("market")
+                selection = bet.get("sel", bet.get("selection"))
+                line = bet.get("line", "")
+                betbck_odds = bet.get("bck_odds", "N/A")
+                
+                # Re-fetch the current Pinnacle NVP based on market type
+                latest_nvp = bet.get("pin_nvp", "N/A")
+                
+                # Look for updated Pinnacle NVP in the latest data
+                pin_periods = pinnacle_data.get("periods", {})
+                pin_full_game = pin_periods.get("num_0", {})
+                
+                # Try to find and update NVP based on market type
+                try:
+                    if market_type == "ML":
+                        pin_ml = pin_full_game.get("money_line", {})
+                        if selection == "Home" or selection == bet_data.get("pod_home_team"):
+                            latest_nvp = pin_ml.get("nvp_american_home", latest_nvp)
+                        elif selection == "Away" or selection == bet_data.get("pod_away_team"):
+                            latest_nvp = pin_ml.get("nvp_american_away", latest_nvp)
+                        elif selection == "Draw":
+                            latest_nvp = pin_ml.get("nvp_american_draw", latest_nvp)
+                    elif market_type == "Spread":
+                        pin_spreads = pin_full_game.get("spreads", {})
+                        # Determine if this is home or away
+                        is_home = selection == bet_data.get("pod_home_team")
+                        target_hdp = float(line) if is_home else -float(line)
+                        for hdp_key, spread_data in pin_spreads.items():
+                            if abs(spread_data.get("hdp", 0) - target_hdp) < 0.01:
+                                latest_nvp = spread_data.get("nvp_american_home" if is_home else "nvp_american_away", latest_nvp)
+                                break
+                    elif market_type == "Total":
+                        pin_totals = pin_full_game.get("totals", {})
+                        target_points = line
+                        if target_points in pin_totals:
+                            latest_nvp = pin_totals[target_points].get(
+                                "nvp_american_over" if selection == "Over" else "nvp_american_under", 
+                                latest_nvp
+                            )
+                    
+                    # Recalculate EV with latest NVP
+                    if latest_nvp != "N/A" and betbck_odds != "N/A":
+                        bet_decimal = american_to_decimal(betbck_odds)
+                        true_decimal = american_to_decimal(latest_nvp)
+                        from main_logic import calculate_ev
+                        ev = calculate_ev(bet_decimal, true_decimal)
+                        ev_display = f"{ev*100:.2f}%" if ev is not None else bet.get("ev", "N/A")
+                    else:
+                        ev_display = bet.get("ev", "N/A")
+                        
+                    print(f"[GetActiveEvents] Market {market_type} {selection} {line}: Updated NVP from {bet.get('pin_nvp')} to {latest_nvp}")
+                except Exception as e:
+                    print(f"[GetActiveEvents] Error updating market {market_type} {selection}: {e}")
+                    ev_display = bet.get("ev", "N/A")
+                    latest_nvp = bet.get("pin_nvp", "N/A")
+                
                 # Map keys to expected frontend format
                 markets.append({
-                    "market": bet.get("market"),
-                    "selection": bet.get("sel", bet.get("selection")),
-                    "line": bet.get("line", ""),
-                    "pinnacle_nvp": bet.get("pin_nvp", "N/A"),
-                    "betbck_odds": bet.get("bck_odds", "N/A"),
-                    "ev": bet.get("ev", "N/A")
+                    "market": market_type,
+                    "selection": selection,
+                    "line": line,
+                    "pinnacle_nvp": latest_nvp,
+                    "betbck_odds": betbck_odds,
+                    "ev": ev_display
                 })
         data_to_send[eid] = {
             "title": f"{home_team} vs {away_team}",
