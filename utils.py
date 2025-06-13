@@ -1,17 +1,102 @@
 import math
+import re
+
+def normalize_team_name_for_matching(name):
+    original_name_for_debug = name
+    if name is None or not name:  # Explicitly check for None
+        print(f"[Utils] WARNING: normalize_team_name_for_matching received None or empty input: '{original_name_for_debug}'")
+        return ""
+
+    # Handle common phrases indicating a prop/future first
+    trophy_match = re.match(r'(.+?)\s*(?:to lift the trophy|lift the trophy|to win.*|wins.*|\(match\)|series price|to win series|\(corners\))', name, re.IGNORECASE)
+    if trophy_match:
+        name = trophy_match.group(1).strip()
+
+    norm_name = name.lower()
+    norm_name = re.sub(r'\s*\((?:games|sets|match|hits\+runs\+errors|h\+r\+e|hre|corners)\)$', '', norm_name).strip()
+    norm_name = re.sub(r'\s*\([^)]*\)', '', norm_name).strip()
+
+    league_country_suffixes = [
+        'mlb', 'nba', 'nfl', 'nhl', 'ncaaf', 'ncaab', 'wnba',
+        'poland', 'bulgaria', 'uruguay', 'colombia', 'peru', 'argentina', 
+        'sweden', 'romania', 'finland', 'england', 'japan', 'austria',
+        'liga 1', 'serie a', 'bundesliga', 'la liga', 'ligue 1', 'premier league',
+        'epl', 'mls', 'tipico bundesliga', 'belarus'
+    ]
+    for suffix in league_country_suffixes:
+        pattern = r'(\s+' + re.escape(suffix) + r'|' + re.escape(suffix) + r')$'
+        if re.search(pattern, norm_name, flags=re.IGNORECASE):
+            temp_name = re.sub(pattern, '', norm_name, flags=re.IGNORECASE, count=1).strip()
+            if temp_name or len(norm_name) == len(suffix): 
+                norm_name = temp_name
+
+    common_prefixes = ['if ', 'fc ', 'sc ', 'bk ', 'sk ', 'ac ', 'as ', 'fk ', 'cd ', 'ca ', 'afc ', 'cfr ', 'kc ', 'scr ']
+    for prefix in common_prefixes: 
+        if norm_name.startswith(prefix): norm_name = norm_name[len(prefix):].strip()
+    for prefix in common_prefixes: 
+        if norm_name.startswith(prefix): norm_name = norm_name[len(prefix):].strip()
+
+    if "tottenham hotspur" in name.lower(): norm_name = "tottenham" 
+    elif "paris saint germain" in name.lower() or "paris sg" in name.lower(): norm_name = "psg"
+    elif "new york" in name.lower(): norm_name = norm_name.replace("new york", "ny")
+    elif "los angeles" in name.lower(): norm_name = norm_name.replace("los angeles", "la")
+    elif "st louis" in name.lower(): norm_name = norm_name.replace("st louis", "st. louis") 
+    elif "inter milan" in name.lower() or name.lower() == "internazionale": norm_name = "inter"
+    elif "rheindorf altach" in name.lower(): norm_name = "altach" 
+    elif "scr altach" in name.lower(): norm_name = "altach"
+    
+    norm_name = re.sub(r'^[^\w]+|[^\w]+$', '', norm_name) 
+    norm_name = re.sub(r'[^\w\s\.\-\+]', '', norm_name) 
+    final_normalized_name = " ".join(norm_name.split()).strip() 
+    return final_normalized_name if final_normalized_name else (original_name_for_debug.lower().strip() if original_name_for_debug else "")
+
+def get_cleaned_team_name_from_div(team_div_soup):
+    if not team_div_soup: return ""
+    raw_name_text = ""
+    name_span = team_div_soup.find('span', {'data-language': True})
+    if name_span:
+        raw_name_text = name_span.get_text(separator=' ', strip=True)
+    
+    if not raw_name_text:
+        text_segments = []
+        for content in team_div_soup.children:
+            if isinstance(content, str):
+                cleaned_str = content.strip()
+                if cleaned_str: text_segments.append(cleaned_str)
+            elif content.name == 'span' and content.has_attr('class') and any(cls in content['class'] for cls in ['game_number_local', 'game_number_visitor']):
+                continue
+            elif content.name == 'span' and 'font-size:11px' in content.get('style','').replace(" ", ""):
+                continue
+            elif content.name == 'br':
+                text_segments.append(" ")
+            elif content.name not in ['input', 'strong'] or \
+                 (content.name == 'strong' and not content.get_text(strip=True).isdigit()):
+                text_segments.append(content.get_text(strip=True))
+        raw_name_text = " ".join(filter(None, text_segments))
+    
+    raw_name_text = re.sub(r'\s*-\s*[A-Za-z\s.]+\s*-\s*[RLrl]\s*(must\s*start|sta\.?)\s*$', '', raw_name_text, flags=re.IGNORECASE).strip()
+    raw_name_text = re.sub(r'\s*[A-Z]\.\s*[A-Za-z\s.]+\s*-\s*[RLrl]\s*(must\s*start|sta\.?)\s*$', '', raw_name_text, flags=re.IGNORECASE).strip()
+    raw_name_text = re.sub(r'^\d{3,7}\s*', '', raw_name_text).strip()
+    raw_name_text = re.sub(r'\s*\((hits\+runs\+errors|h\+r\+e|hre)\)$', '', raw_name_text, flags=re.IGNORECASE).strip()
+    return " ".join(raw_name_text.split()) if raw_name_text else ""
+
+def american_to_decimal(american_odds_str):
+    if american_odds_str is None: return None
+    try:
+        if isinstance(american_odds_str, str) and not re.match(r"^[+-]?\d+$", american_odds_str.strip()): return None
+        odds = float(str(american_odds_str).strip())
+        if odds > 0: return (odds / 100.0) + 1.0
+        if odds < 0: return (100.0 / abs(odds)) + 1.0
+        return None 
+    except ValueError: return None
 
 def decimal_to_american(decimal_odds):
-    if decimal_odds is None or not isinstance(decimal_odds, (float, int)):
-        return "N/A"
-    if decimal_odds <= 1.001: # Handle non-positive implied probability or no profit
-        return "N/A" 
-    if decimal_odds >= 2.0:
-        return f"+{int(round((decimal_odds - 1) * 100))}"
-    else:
-        return f"{int(round(-100 / (decimal_odds - 1)))}"
+    if decimal_odds is None or not isinstance(decimal_odds, (float, int)): return None
+    if decimal_odds <= 1.0001: return None 
+    if decimal_odds >= 2.0: return f"+{int(round((decimal_odds - 1) * 100))}"
+    return f"{int(round(-100 / (decimal_odds - 1)))}"
 
 def adjust_power_probabilities(probabilities, tolerance=1e-4, max_iterations=100):
-    # (Keep your NVP adjust_power_probabilities function here - from server.py)
     k = 1.0 
     valid_probs_for_power = [p for p in probabilities if p is not None and p > 0]
     if not valid_probs_for_power or len(valid_probs_for_power) < 2:
@@ -54,7 +139,6 @@ def adjust_power_probabilities(probabilities, tolerance=1e-4, max_iterations=100
     return normalized_true_probs
 
 def calculate_nvp_for_market(odds_list):
-    # (Keep your NVP calculate_nvp_for_market function here - from server.py)
     valid_odds_indices = [i for i, odd in enumerate(odds_list) if odd is not None and isinstance(odd, (int, float)) and odd > 1.0001]
     if len(valid_odds_indices) < 2: return [None] * len(odds_list)
 
@@ -84,16 +168,20 @@ def process_event_odds_for_display(pinnacle_event_json_data):
     Modifies the input dictionary in place.
     """
     if not pinnacle_event_json_data or 'data' not in pinnacle_event_json_data:
-        # print("[Utils] No 'data' key in pinnacle_event_json_data for processing.")
         return pinnacle_event_json_data
 
     event_detail = pinnacle_event_json_data['data']
-    if not isinstance(event_detail, dict) : return pinnacle_event_json_data
+    if not isinstance(event_detail, dict): return pinnacle_event_json_data
     periods = event_detail.get("periods", {})
     if not isinstance(periods, dict): return pinnacle_event_json_data
 
-    for period_key, period_data in periods.items(): # Process all periods (num_0, num_1, etc.)
+    for period_key, period_data in periods.items():
         if not isinstance(period_data, dict): continue
+
+        # Remove the 'history' key from each period
+        if 'history' in period_data:
+            del period_data['history']
+            print(f"[DEBUG] History removed for period: {period_key}")
 
         # Moneyline
         if period_data.get("money_line") and isinstance(period_data["money_line"], dict):
