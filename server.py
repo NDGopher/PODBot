@@ -4,50 +4,101 @@ import time
 import threading
 import traceback
 import math
+import logging
+from typing import Dict, Set, Any, Optional
+from datetime import datetime, timezone
 
 from utils import process_event_odds_for_display
 from pinnacle_fetcher import fetch_live_pinnacle_event_odds
 from main_logic import process_alert_and_scrape_betbck, clean_pod_team_name_for_search, american_to_decimal
 
-app = Flask(__name__)
-CORS(app, resources={r"/get_active_events_data": {"origins": "*"}})
-app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-active_events_data_store = {}
-EVENT_DATA_EXPIRY_SECONDS = 300
-BACKGROUND_REFRESH_INTERVAL_SECONDS = 3
-dismissed_event_ids = set()
+class StateManager:
+    def __init__(self):
+        self._active_events_lock = threading.Lock()
+        self._dismissed_events_lock = threading.Lock()
+        self._active_events: Dict[str, Dict[str, Any]] = {}
+        self._dismissed_event_ids: Set[str] = set()
+        self.EVENT_DATA_EXPIRY_SECONDS = 300
+        self.BACKGROUND_REFRESH_INTERVAL_SECONDS = 3
+
+    def get_active_events(self) -> Dict[str, Dict[str, Any]]:
+        with self._active_events_lock:
+            return self._active_events.copy()
+
+    def add_active_event(self, event_id: str, event_data: Dict[str, Any]) -> None:
+        with self._active_events_lock:
+            self._active_events[event_id] = event_data
+
+    def remove_active_event(self, event_id: str) -> None:
+        with self._active_events_lock:
+            self._active_events.pop(event_id, None)
+
+    def is_event_dismissed(self, event_id: str) -> bool:
+        with self._dismissed_events_lock:
+            return event_id in self._dismissed_event_ids
+
+    def add_dismissed_event(self, event_id: str) -> None:
+        with self._dismissed_events_lock:
+            self._dismissed_event_ids.add(event_id)
+
+    def remove_dismissed_event(self, event_id: str) -> None:
+        with self._dismissed_events_lock:
+            self._dismissed_event_ids.discard(event_id)
+
+    def update_event_data(self, event_id: str, update_data: Dict[str, Any]) -> None:
+        with self._active_events_lock:
+            if event_id in self._active_events:
+                self._active_events[event_id].update(update_data)
+
+state_manager = StateManager()
+
+app = Flask(__name__)
+CORS(app)
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 def background_event_refresher():
     while True:
         try:
-            time.sleep(BACKGROUND_REFRESH_INTERVAL_SECONDS)
+            time.sleep(state_manager.BACKGROUND_REFRESH_INTERVAL_SECONDS)
             current_time = time.time()
-            for event_id, event_data in list(active_events_data_store.items()):
-                if event_id in dismissed_event_ids:
-                    del active_events_data_store[event_id]
-                    print(f"[BackgroundRefresher] Removed dismissed Event ID: {event_id}")
+            active_events = state_manager.get_active_events()
+            
+            for event_id, event_data in list(active_events.items()):
+                if state_manager.is_event_dismissed(event_id):
+                    state_manager.remove_active_event(event_id)
+                    logger.info(f"[BackgroundRefresher] Removed dismissed Event ID: {event_id}")
                     continue
-                if (current_time - event_data.get("alert_arrival_timestamp", 0)) > EVENT_DATA_EXPIRY_SECONDS:
-                    del active_events_data_store[event_id]
-                    if event_id in dismissed_event_ids:
-                        dismissed_event_ids.remove(event_id)
-                    print(f"[BackgroundRefresher] Removed expired Event ID: {event_id}")
+                    
+                if (current_time - event_data.get("alert_arrival_timestamp", 0)) > state_manager.EVENT_DATA_EXPIRY_SECONDS:
+                    state_manager.remove_active_event(event_id)
+                    state_manager.remove_dismissed_event(event_id)
+                    logger.info(f"[BackgroundRefresher] Removed expired Event ID: {event_id}")
                     continue
+                    
                 try:
                     pinnacle_api_result = fetch_live_pinnacle_event_odds(event_id)
                     live_pinnacle_odds_processed = process_event_odds_for_display(pinnacle_api_result.get("data"))
                     if not live_pinnacle_odds_processed.get("data"):
-                        print(f"[BackgroundRefresher] No data for Event ID: {event_id}, skipping update")
+                        logger.info(f"[BackgroundRefresher] No data for Event ID: {event_id}, skipping update")
                         continue
-                    event_data["last_pinnacle_data_update_timestamp"] = current_time
-                    event_data["pinnacle_data_processed"] = live_pinnacle_odds_processed
-                    print(f"[BackgroundRefresher] Updated Pinnacle odds for Event ID: {event_id}")
+                        
+                    state_manager.update_event_data(event_id, {
+                        "last_pinnacle_data_update_timestamp": current_time,
+                        "pinnacle_data_processed": live_pinnacle_odds_processed
+                    })
+                    logger.info(f"[BackgroundRefresher] Updated Pinnacle odds for Event ID: {event_id}")
                 except Exception as e:
-                    print(f"[BackgroundRefresher] Failed to update Event ID: {event_id}, Error: {e}")
+                    logger.error(f"[BackgroundRefresher] Failed to update Event ID: {event_id}, Error: {e}")
                     traceback.print_exc()
         except Exception as e:
-            print(f"[BackgroundRefresher] Critical Error: {e}")
+            logger.error(f"[BackgroundRefresher] Critical Error: {e}")
             traceback.print_exc()
 
 @app.route('/pod_alert', methods=['POST'])
@@ -59,12 +110,13 @@ def handle_pod_alert():
             return jsonify({"status": "error", "message": "Missing eventId"}), 400
 
         now = time.time()
-        print(f"\n[Server-PodAlert] Received alert for Event ID: {event_id_str} ({payload.get('homeTeam','?')})")
+        logger.info(f"\n[Server-PodAlert] Received alert for Event ID: {event_id_str} ({payload.get('homeTeam','?')})")
 
-        if event_id_str in active_events_data_store:
-            last_processed = active_events_data_store[event_id_str].get("last_pinnacle_data_update_timestamp", 0)
+        active_events = state_manager.get_active_events()
+        if event_id_str in active_events:
+            last_processed = active_events[event_id_str].get("last_pinnacle_data_update_timestamp", 0)
             if (now - last_processed) < 15:
-                print(f"[Server-PodAlert] Ignoring duplicate alert for Event ID: {event_id_str}")
+                logger.info(f"[Server-PodAlert] Ignoring duplicate alert for Event ID: {event_id_str}")
                 return jsonify({"status": "success", "message": f"Alert for {event_id_str} recently processed."}), 200
 
         pinnacle_api_result = fetch_live_pinnacle_event_odds(event_id_str)
@@ -76,18 +128,18 @@ def handle_pod_alert():
         pod_away_clean = clean_pod_team_name_for_search(payload.get("awayTeam", ""))
 
         betbck_last_update = None
-        if event_id_str not in active_events_data_store:
-            print(f"[Server-PodAlert] New event {event_id_str}. Initiating scrape.")
+        if event_id_str not in active_events:
+            logger.info(f"[Server-PodAlert] New event {event_id_str}. Initiating scrape.")
             betbck_result = process_alert_and_scrape_betbck(event_id_str, payload, live_pinnacle_odds_processed)
 
             if not (betbck_result and betbck_result.get("status") == "success"):
                 fail_reason = betbck_result.get("message", "Scraper returned None")
-                print(f"[Server-PodAlert] Scrape failed. Dropping alert. Reason: {fail_reason}")
+                logger.error(f"[Server-PodAlert] Scrape failed. Dropping alert. Reason: {fail_reason}")
                 return jsonify({"status": "error", "message": f"Scrape failed: {fail_reason}"}), 200
 
-            print(f"[Server-PodAlert] Scrape successful. Storing event {event_id_str} for display.")
+            logger.info(f"[Server-PodAlert] Scrape successful. Storing event {event_id_str} for display.")
             betbck_last_update = now
-            active_events_data_store[event_id_str] = {
+            event_data = {
                 "alert_arrival_timestamp": now,
                 "last_pinnacle_data_update_timestamp": now,
                 "pinnacle_data_processed": live_pinnacle_odds_processed,
@@ -102,15 +154,18 @@ def handle_pod_alert():
                 "cleaned_away_team": pod_away_clean,
                 "betbck_last_update": betbck_last_update
             }
+            state_manager.add_active_event(event_id_str, event_data)
         else:
-            print(f"[Server-PodAlert] Updating existing event {event_id_str} with fresh Pinnacle data.")
-            active_events_data_store[event_id_str]["last_pinnacle_data_update_timestamp"] = now
-            active_events_data_store[event_id_str]["pinnacle_data_processed"] = live_pinnacle_odds_processed
+            logger.info(f"[Server-PodAlert] Updating existing event {event_id_str} with fresh Pinnacle data.")
+            state_manager.update_event_data(event_id_str, {
+                "last_pinnacle_data_update_timestamp": now,
+                "pinnacle_data_processed": live_pinnacle_odds_processed
+            })
 
         return jsonify({"status": "success", "message": f"Alert for {event_id_str} processed."}), 200
 
     except Exception as e:
-        print(f"[Server-PodAlert] CRITICAL Error in /pod_alert: {e}")
+        logger.error(f"[Server-PodAlert] CRITICAL Error in /pod_alert: {e}")
         traceback.print_exc()
         return jsonify({"status": "error", "message": f"Internal server error: {str(e)}"}), 500
 
@@ -118,8 +173,8 @@ def handle_pod_alert():
 def get_active_events_data():
     current_time_sec = time.time()
     data_to_send = {}
-    for eid, entry in active_events_data_store.items():
-        if (current_time_sec - entry.get("alert_arrival_timestamp", 0)) > EVENT_DATA_EXPIRY_SECONDS:
+    for eid, entry in state_manager.get_active_events().items():
+        if (current_time_sec - entry.get("alert_arrival_timestamp", 0)) > state_manager.EVENT_DATA_EXPIRY_SECONDS:
             continue
         bet_data = entry["betbck_data"].get("data", {})
         pinnacle_data = entry["pinnacle_data_processed"].get("data", {})
@@ -129,9 +184,19 @@ def get_active_events_data():
         away_team = pinnacle_data.get("away", entry["original_alert_details"].get("awayTeam", "Away"))
         league_name = pinnacle_data.get("league_name", entry.get("league_name", "Unknown League"))
         start_time = pinnacle_data.get("starts", entry.get("start_time", "N/A"))
+        # Always format start_time as ISO 8601 UTC string if it's a timestamp
         if isinstance(start_time, (int, float)) and start_time > 1000000000:
-            from datetime import datetime
-            start_time = datetime.utcfromtimestamp(start_time/1000).strftime('%Y-%m-%d %H:%M')
+            # Assume ms timestamp
+            dt = datetime.utcfromtimestamp(start_time/1000).replace(tzinfo=timezone.utc)
+            start_time = dt.isoformat().replace('+00:00', 'Z')
+        elif isinstance(start_time, str):
+            try:
+                # Try to parse as naive string and convert to UTC ISO
+                dt = datetime.strptime(start_time, '%Y-%m-%d %H:%M')
+                dt = dt.replace(tzinfo=timezone.utc)
+                start_time = dt.isoformat().replace('+00:00', 'Z')
+            except Exception:
+                pass  # Leave as is if parsing fails
         allow_draw = False
         if "soccer" in league_name.lower() or "draw" in str(pinnacle_data.get("money_line", {})).lower():
             allow_draw = True
@@ -217,9 +282,9 @@ def get_active_events_data():
             "markets": markets,
             "alert_arrival_timestamp": entry.get("alert_arrival_timestamp", None)
         }
-    expired_ids = set(active_events_data_store.keys()) - set(data_to_send.keys())
+    expired_ids = set(state_manager.get_active_events().keys()) - set(data_to_send.keys())
     for eid in expired_ids:
-        del active_events_data_store[eid]
+        state_manager.remove_active_event(eid)
     print(f"[GetActiveEvents] Returning {len(data_to_send)} active events")
     return jsonify(data_to_send)
 
@@ -233,13 +298,12 @@ def dismiss_event():
     data = request.json
     event_id = str(data.get('eventId'))
     if event_id:
-        dismissed_event_ids.add(event_id)
-        if event_id in active_events_data_store:
-            del active_events_data_store[event_id]
+        state_manager.add_dismissed_event(event_id)
+        state_manager.remove_active_event(event_id)
         return jsonify({'status': 'success', 'message': f'Event {event_id} dismissed.'})
     return jsonify({'status': 'error', 'message': 'No eventId provided.'}), 400
 
 if __name__ == '__main__':
-    print("Starting Python Flask server for PODBot...")
+    logger.info("Starting Python Flask server for PODBot...")
     threading.Thread(target=background_event_refresher, daemon=True).start()
     app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=False, threaded=True)
