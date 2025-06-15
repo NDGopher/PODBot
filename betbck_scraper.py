@@ -4,11 +4,12 @@ import json
 import re
 import os
 import time
+from utils import normalize_team_name_for_matching
 
 # Attempt to import fuzzywuzzy for robust team matching
 try:
     from fuzzywuzzy import fuzz
-    FUZZY_MATCH_THRESHOLD = 80  # Threshold for team name matching (0-100) - Adjust cautiously
+    FUZZY_MATCH_THRESHOLD = 70  # Threshold for team name matching (0-100) - Adjust cautiously
     print("[BetbckScraper] fuzzywuzzy library loaded.")
 except ImportError:
     print("[BetbckScraper] WARNING: fuzzywuzzy library not found. Team matching will rely on more exact normalization.")
@@ -94,6 +95,24 @@ def search_team_and_get_results_html(session, team_name_query, inet_wager_val, i
     except Exception as e: print(f"[BetbckScraper] Team search POST failed for '{team_name_query}': {e}"); return None
 
 # --- Normalization and Parsing Utilities ---
+TEAM_ALIASES = {
+    'north korea': ['korea dpr', 'dpr korea', 'democratic people\'s republic of korea'],
+    'south korea': ['korea republic', 'republic of korea'],
+    'ivory coast': ['cote d\'ivoire'],
+    'czech republic': ['czechia'],
+    'united states': ['usa', 'us', 'united states of america'],
+    'iran': ['iran', 'iran isl', 'islamic republic of iran'],
+    'russia': ['russian federation'],
+    # Add more as needed
+}
+
+def alias_normalize(name):
+    name = name.lower().strip()
+    for canonical, aliases in TEAM_ALIASES.items():
+        if name == canonical or name in aliases:
+            return canonical
+    return name
+
 def normalize_team_name_for_matching(name):
     original_name_for_debug = name
     if not name: return ""
@@ -119,6 +138,8 @@ def normalize_team_name_for_matching(name):
     norm_name = re.sub(r'^[^\w]*(.*?)[^\w]*$', r'\1', norm_name) 
     norm_name = re.sub(r'[^\w\s\.\-\+]', '', norm_name) 
     final_normalized_name = " ".join(norm_name.split()).strip()
+    # Use alias normalization
+    final_normalized_name = alias_normalize(final_normalized_name)
     if original_name_for_debug and original_name_for_debug.lower().strip() != final_normalized_name and final_normalized_name:
         print(f"[NORM_DEBUG] Original: '{original_name_for_debug}' ---> Normalized: '{final_normalized_name}'")
     return final_normalized_name if final_normalized_name else (original_name_for_debug.lower().strip() if original_name_for_debug else "")
@@ -193,9 +214,9 @@ def extract_line_value_from_text(text_content_or_td_element, market_type="Spread
     if not text_content_or_td_element: return None
     text = ""
     if isinstance(text_content_or_td_element, str): text = text_content_or_td_element
-    elif hasattr(text_content_or_td_element, 'find'): 
+    elif hasattr(text_content_or_td_element, 'find'):
         select_el = text_content_or_td_element.find('select')
-        if select_el and market_type == "Total": 
+        if select_el and market_type == "Total":
             option = select_el.find('option', selected=True) or select_el.find('option')
             if option: text = option.get_text(" ", strip=True)
             else: text = select_el.get_text(" ", strip=True)
@@ -203,7 +224,8 @@ def extract_line_value_from_text(text_content_or_td_element, market_type="Spread
     else: return None
     text = str(text).replace('½','.5').replace('\u00a0',' ').strip()
     if market_type=="Total":
-        m = re.search(r'[ou]\s*(\d*\.?\d+(?:,\s*\d*\.?\d+)?)',text,re.IGNORECASE)
+        # Match o/u with or without spaces, e.g., o3-125, o3 -125, o 3 -125
+        m = re.search(r'[ouO\/]\s*([0-9.,]+)\s*[-+]\d+',text,re.IGNORECASE)
         if m: return normalize_asian_handicap(m.group(1).replace(' ',''))
     return None
 
@@ -301,11 +323,35 @@ def parse_specific_game_from_search_html(html_content, target_home_team_pod, tar
         if norm_pod_h == norm_bck_l and norm_pod_a == norm_bck_v: matched, bck_local_is_pod_home = True, True; print(f"[BetbckParser] Exact Match (Order 1) for {raw_bck_l} vs {raw_bck_v}")
         elif norm_pod_h == norm_bck_v and norm_pod_a == norm_bck_l: matched, bck_local_is_pod_home = True, False; print(f"[BetbckParser] Exact Match (Order 2 - Flipped) for {raw_bck_l} vs {raw_bck_v}")
         elif fuzz:
-            s_hl,s_av = fuzz.token_set_ratio(norm_pod_h,norm_bck_l), fuzz.token_set_ratio(norm_pod_a,norm_bck_v)
-            s_hv,s_al = fuzz.token_set_ratio(norm_pod_h,norm_bck_v), fuzz.token_set_ratio(norm_pod_a,norm_bck_l)
-            print(f"[BetbckParser] Fuzzy Scores for {raw_bck_l} vs {raw_bck_v}: (H-L {s_hl} A-V {s_av}) OR (H-V {s_hv} A-L {s_al})")
-            if s_hl >= FUZZY_MATCH_THRESHOLD and s_av >= FUZZY_MATCH_THRESHOLD: matched,bck_local_is_pod_home=True,True; print(f"[BetbckParser] Fuzzy Match (Order 1)")
-            elif s_hv >= FUZZY_MATCH_THRESHOLD and s_al >= FUZZY_MATCH_THRESHOLD: matched,bck_local_is_pod_home=True,False; print(f"[BetbckParser] Fuzzy Match (Order 2 - Flipped)")
+            # Try all alias combinations for both orders
+            pod_h_aliases = [norm_pod_h] + TEAM_ALIASES.get(norm_pod_h, [])
+            pod_a_aliases = [norm_pod_a] + TEAM_ALIASES.get(norm_pod_a, [])
+            bck_l_aliases = [norm_bck_l] + TEAM_ALIASES.get(norm_bck_l, [])
+            bck_v_aliases = [norm_bck_v] + TEAM_ALIASES.get(norm_bck_v, [])
+            found_fuzzy = False
+            for ph in pod_h_aliases:
+                for bh in bck_l_aliases:
+                    for pa in pod_a_aliases:
+                        for bv in bck_v_aliases:
+                            s_hl = fuzz.token_set_ratio(ph, bh)
+                            s_av = fuzz.token_set_ratio(pa, bv)
+                            s_hv = fuzz.token_set_ratio(ph, bv)
+                            s_al = fuzz.token_set_ratio(pa, bh)
+                            print(f"[DEBUG] Comparing normalized: POD H='{ph}', A='{pa}' with BCK H='{bh}', A='{bv}' | Scores: (H-L {s_hl} A-V {s_av}) OR (H-V {s_hv} A-L {s_al})")
+                            if s_hl >= FUZZY_MATCH_THRESHOLD and s_av >= FUZZY_MATCH_THRESHOLD:
+                                matched, bck_local_is_pod_home = True, True
+                                print(f"[BetbckParser] Fuzzy Alias Match (Order 1)")
+                                found_fuzzy = True
+                                break
+                            elif s_hv >= FUZZY_MATCH_THRESHOLD and s_al >= FUZZY_MATCH_THRESHOLD:
+                                matched, bck_local_is_pod_home = True, False
+                                print(f"[BetbckParser] Fuzzy Alias Match (Order 2 - Flipped)")
+                                found_fuzzy = True
+                                break
+                        if found_fuzzy: break
+                    if found_fuzzy: break
+                if found_fuzzy: break
+            if not matched: continue
         
         if not matched: continue
         

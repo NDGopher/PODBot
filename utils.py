@@ -3,11 +3,11 @@ import re
 
 def normalize_team_name_for_matching(name):
     original_name_for_debug = name
-    if name is None or not name:  # Explicitly check for None
+    if name is None or not name:
         print(f"[Utils] WARNING: normalize_team_name_for_matching received None or empty input: '{original_name_for_debug}'")
         return ""
 
-    # Handle common phrases indicating a prop/future first
+    # Remove common phrases indicating a prop/future
     trophy_match = re.match(r'(.+?)\s*(?:to lift the trophy|lift the trophy|to win.*|wins.*|\(match\)|series price|to win series|\(corners\))', name, re.IGNORECASE)
     if trophy_match:
         name = trophy_match.group(1).strip()
@@ -16,9 +16,17 @@ def normalize_team_name_for_matching(name):
     norm_name = re.sub(r'\s*\((?:games|sets|match|hits\+runs\+errors|h\+r\+e|hre|corners)\)$', '', norm_name).strip()
     norm_name = re.sub(r'\s*\([^)]*\)', '', norm_name).strip()
 
+    # Remove country/competition suffixes if not the whole name
+    suffix_patterns = [
+        r'\s*usa$', r'\s*u21$', r'\s*uefa.*$', r'\s*fifa.*$', r'\s*euro.*$', r'\s*afc.*$', r'\s*concacaf.*$', r'\s*conmebol.*$', r'\s*olympics.*$', r'\s*championship.*$', r'\s*cup.*$', r'\s*league.*$', r'\s*mls$', r'\s*england$', r'\s*scotland$', r'\s*france$', r'\s*spain$', r'\s*italy$', r'\s*germany$', r'\s*netherlands$', r'\s*portugal$', r'\s*denmark$', r'\s*sweden$', r'\s*norway$', r'\s*switzerland$', r'\s*belgium$', r'\s*austria$', r'\s*poland$', r'\s*croatia$', r'\s*serbia$', r'\s*romania$', r'\s*bulgaria$', r'\s*slovakia$', r'\s*slovenia$', r'\s*hungary$', r'\s*czech republic$', r'\s*russia$', r'\s*ukraine$', r'\s*turkey$', r'\s*greece$', r'\s*ireland$', r'\s*wales$', r'\s*northern ireland$'
+    ]
+    for pattern in suffix_patterns:
+        if norm_name != pattern.strip('\\s*$'):
+            norm_name = re.sub(pattern, '', norm_name, flags=re.IGNORECASE).strip()
+
     league_country_suffixes = [
         'mlb', 'nba', 'nfl', 'nhl', 'ncaaf', 'ncaab', 'wnba',
-        'poland', 'bulgaria', 'uruguay', 'colombia', 'peru', 'argentina', 
+        'poland', 'bulgaria', 'uruguay', 'colombia', 'peru', 'argentina',
         'sweden', 'romania', 'finland', 'england', 'japan', 'austria',
         'liga 1', 'serie a', 'bundesliga', 'la liga', 'ligue 1', 'premier league',
         'epl', 'mls', 'tipico bundesliga', 'belarus'
@@ -27,27 +35,36 @@ def normalize_team_name_for_matching(name):
         pattern = r'(\s+' + re.escape(suffix) + r'|' + re.escape(suffix) + r')$'
         if re.search(pattern, norm_name, flags=re.IGNORECASE):
             temp_name = re.sub(pattern, '', norm_name, flags=re.IGNORECASE, count=1).strip()
-            if temp_name or len(norm_name) == len(suffix): 
+            if temp_name or len(norm_name) == len(suffix):
                 norm_name = temp_name
 
     common_prefixes = ['if ', 'fc ', 'sc ', 'bk ', 'sk ', 'ac ', 'as ', 'fk ', 'cd ', 'ca ', 'afc ', 'cfr ', 'kc ', 'scr ']
-    for prefix in common_prefixes: 
+    for prefix in common_prefixes:
         if norm_name.startswith(prefix): norm_name = norm_name[len(prefix):].strip()
-    for prefix in common_prefixes: 
+    for prefix in common_prefixes:
         if norm_name.startswith(prefix): norm_name = norm_name[len(prefix):].strip()
 
-    if "tottenham hotspur" in name.lower(): norm_name = "tottenham" 
+    if "tottenham hotspur" in name.lower(): norm_name = "tottenham"
     elif "paris saint germain" in name.lower() or "paris sg" in name.lower(): norm_name = "psg"
     elif "new york" in name.lower(): norm_name = norm_name.replace("new york", "ny")
     elif "los angeles" in name.lower(): norm_name = norm_name.replace("los angeles", "la")
-    elif "st louis" in name.lower(): norm_name = norm_name.replace("st louis", "st. louis") 
+    elif "st louis" in name.lower(): norm_name = norm_name.replace("st louis", "st. louis")
     elif "inter milan" in name.lower() or name.lower() == "internazionale": norm_name = "inter"
-    elif "rheindorf altach" in name.lower(): norm_name = "altach" 
+    elif "rheindorf altach" in name.lower(): norm_name = "altach"
     elif "scr altach" in name.lower(): norm_name = "altach"
-    
-    norm_name = re.sub(r'^[^\w]+|[^\w]+$', '', norm_name) 
-    norm_name = re.sub(r'[^\w\s\.\-\+]', '', norm_name) 
-    final_normalized_name = " ".join(norm_name.split()).strip() 
+
+    # Convert to lowercase and strip whitespace
+    normalized = norm_name.lower().strip()
+    # Remove common suffixes like 'Chile', 'USA', 'UEFA - U21 European Championship', 'CONCACAF', 'Nippon Professional Baseball', etc.
+    suffixes = ["chile", "usa", "uefa - u21 european championship", "concacaf", "nippon professional baseball"]
+    for suffix in suffixes:
+        if normalized.endswith(suffix):
+            normalized = normalized[:-len(suffix)]
+
+    norm_name = re.sub(r'^[^\w]+|[^\w]+$', '', normalized)
+    norm_name = re.sub(r'[^\w\s\.\-\+]', '', norm_name)
+    final_normalized_name = " ".join(norm_name.split()).strip()
+    print(f"[NORM_DEBUG] Original: '{original_name_for_debug}' ---> Normalized: '{final_normalized_name}'")
     return final_normalized_name if final_normalized_name else (original_name_for_debug.lower().strip() if original_name_for_debug else "")
 
 def get_cleaned_team_name_from_div(team_div_soup):

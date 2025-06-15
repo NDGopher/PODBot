@@ -194,7 +194,46 @@ def analyze_markets_for_ev(bet_data, pinnacle_data):
                 if ev is not None and {"market": "Total 1H", "selection": "Under", "line": line} not in [b for b in potential_bets]:
                     potential_bets.append({"market": "Total 1H", "selection": "Under", "line": line, "ev": f"{ev*100:.2f}%"})
 
-    return potential_bets
+    if pin_spreads_dict:
+        if bet_data.get("home_spreads"):
+            for bck_s in bet_data["home_spreads"]:
+                try:
+                    bck_line = float(bck_s["line"])
+                    pin_s_market = next((s for s in pin_spreads_dict.values() if abs(float(s.get("hdp", 0)) - bck_line) < 0.01), None)
+                    if pin_s_market and pin_s_market.get("nvp_american_home"):
+                        ev = calculate_ev(american_to_decimal(bck_s["odds"]), american_to_decimal(pin_s_market.get("nvp_american_home")))
+                        if ev is not None:
+                            potential_bets.append({"market":"Spread","sel":normalize_team_name_for_matching(bet_data["pod_home_team"]),"line":bck_s["line"],"bck_odds":bck_s["odds"],"pin_nvp":pin_s_market.get("nvp_american_home"),"ev":f"{ev*100:.2f}%"})
+                except (ValueError, TypeError): continue
+        if bet_data.get("away_spreads"):
+            for bck_s in bet_data["away_spreads"]:
+                try:
+                    bck_line = float(bck_s["line"])
+                    pin_s_market = next((s for s in pin_spreads_dict.values() if abs(float(s.get("hdp", 0)) + bck_line) < 0.01), None)
+                    if pin_s_market and pin_s_market.get("nvp_american_away"):
+                        ev = calculate_ev(american_to_decimal(bck_s["odds"]), american_to_decimal(pin_s_market.get("nvp_american_away")))
+                        if ev is not None:
+                            potential_bets.append({"market":"Spread","sel":normalize_team_name_for_matching(bet_data["pod_away_team"]),"line":bck_s["line"],"bck_odds":bck_s["odds"],"pin_nvp":pin_s_market.get("nvp_american_away"),"ev":f"{ev*100:.2f}%"})
+                except (ValueError, TypeError): continue
+    if pin_totals_dict:
+        bck_total_line = bet_data.get("game_total_line")
+        if bck_total_line:
+            try:
+                bck_total_line_float = float(bck_total_line)
+                pin_t_market = next((t for t in pin_totals_dict.values() if abs(float(t.get("points", 0)) - bck_total_line_float) < 0.01), None)
+                if pin_t_market:
+                    if bet_data.get("game_total_over_odds") and pin_t_market.get("nvp_american_over"):
+                        ev = calculate_ev(american_to_decimal(bet_data["game_total_over_odds"]), american_to_decimal(pin_t_market.get("nvp_american_over")))
+                        if ev is not None:
+                            potential_bets.append({"market":"Total","sel":"Over","line":bck_total_line,"bck_odds":bet_data["game_total_over_odds"],"pin_nvp":pin_t_market.get("nvp_american_over"),"ev":f"{ev*100:.2f}%"})
+                    if bet_data.get("game_total_under_odds") and pin_t_market.get("nvp_american_under"):
+                        ev = calculate_ev(american_to_decimal(bet_data["game_total_under_odds"]), american_to_decimal(pin_t_market.get("nvp_american_under")))
+                        if ev is not None:
+                            potential_bets.append({"market":"Total","sel":"Under","line":bck_total_line,"bck_odds":bet_data["game_total_under_odds"],"pin_nvp":pin_t_market.get("nvp_american_under"),"ev":f"{ev*100:.2f}%"})
+            except (ValueError, TypeError):
+                pass
+    bet_data["potential_bets_analyzed"] = potential_bets
+    return {"status": "success", "message": "BetBCK odds analyzed.", "data": bet_data }
 
 def process_alert_and_scrape_betbck(event_id, original_alert_details, processed_pinnacle_data, scrape_betbck=True):
     print(f"\n[MainLogic] process_alert_and_scrape_betbck initiated for Event ID: {event_id}")
@@ -233,11 +272,11 @@ def process_alert_and_scrape_betbck(event_id, original_alert_details, processed_
         if bet_data.get("home_moneyline_american"):
             ev = calculate_ev(american_to_decimal(bet_data["home_moneyline_american"]), american_to_decimal(pin_ml.get("nvp_american_home")))
             if ev is not None:
-                potential_bets.append({"market":"ML","sel":bet_data["pod_home_team"],"line":"","bck_odds":bet_data["home_moneyline_american"],"pin_nvp":pin_ml.get("nvp_american_home"),"ev":f"{ev*100:.2f}%"})
+                potential_bets.append({"market":"ML","sel":normalize_team_name_for_matching(bet_data["pod_home_team"]),"line":"","bck_odds":bet_data["home_moneyline_american"],"pin_nvp":pin_ml.get("nvp_american_home"),"ev":f"{ev*100:.2f}%"})
         if bet_data.get("away_moneyline_american"):
             ev = calculate_ev(american_to_decimal(bet_data["away_moneyline_american"]), american_to_decimal(pin_ml.get("nvp_american_away")))
             if ev is not None:
-                potential_bets.append({"market":"ML","sel":bet_data["pod_away_team"],"line":"","bck_odds":bet_data["away_moneyline_american"],"pin_nvp":pin_ml.get("nvp_american_away"),"ev":f"{ev*100:.2f}%"})
+                potential_bets.append({"market":"ML","sel":normalize_team_name_for_matching(bet_data["pod_away_team"]),"line":"","bck_odds":bet_data["away_moneyline_american"],"pin_nvp":pin_ml.get("nvp_american_away"),"ev":f"{ev*100:.2f}%"})
         if bet_data.get("draw_moneyline_american") and pin_ml.get("nvp_american_draw"):
             ev = calculate_ev(american_to_decimal(bet_data["draw_moneyline_american"]), american_to_decimal(pin_ml.get("nvp_american_draw")))
             if ev is not None:
@@ -246,38 +285,40 @@ def process_alert_and_scrape_betbck(event_id, original_alert_details, processed_
         if bet_data.get("home_spreads"):
             for bck_s in bet_data["home_spreads"]:
                 try:
-                    pin_hdp_key = str(float(bck_s["line"]))
-                    if pin_hdp_key == "-0.0": pin_hdp_key = "0.0"
-                    pin_s_market = next((s for s_hdp, s in pin_spreads_dict.items() if str(s.get("hdp")) == pin_hdp_key), None)
+                    bck_line = float(bck_s["line"])
+                    pin_s_market = next((s for s in pin_spreads_dict.values() if abs(float(s.get("hdp", 0)) - bck_line) < 0.01), None)
                     if pin_s_market and pin_s_market.get("nvp_american_home"):
                         ev = calculate_ev(american_to_decimal(bck_s["odds"]), american_to_decimal(pin_s_market.get("nvp_american_home")))
                         if ev is not None:
-                            potential_bets.append({"market":"Spread","sel":bet_data["pod_home_team"],"line":bck_s["line"],"bck_odds":bck_s["odds"],"pin_nvp":pin_s_market.get("nvp_american_home"),"ev":f"{ev*100:.2f}%"})
+                            potential_bets.append({"market":"Spread","sel":normalize_team_name_for_matching(bet_data["pod_home_team"]),"line":bck_s["line"],"bck_odds":bck_s["odds"],"pin_nvp":pin_s_market.get("nvp_american_home"),"ev":f"{ev*100:.2f}%"})
                 except (ValueError, TypeError): continue
         if bet_data.get("away_spreads"):
             for bck_s in bet_data["away_spreads"]:
                 try:
-                    pin_hdp_key = str(-float(bck_s["line"]))
-                    if pin_hdp_key == "-0.0": pin_hdp_key = "0.0"
-                    pin_s_market = next((s for s_hdp, s in pin_spreads_dict.items() if str(s.get("hdp")) == pin_hdp_key), None)
+                    bck_line = float(bck_s["line"])
+                    pin_s_market = next((s for s in pin_spreads_dict.values() if abs(float(s.get("hdp", 0)) + bck_line) < 0.01), None)
                     if pin_s_market and pin_s_market.get("nvp_american_away"):
                         ev = calculate_ev(american_to_decimal(bck_s["odds"]), american_to_decimal(pin_s_market.get("nvp_american_away")))
                         if ev is not None:
-                            potential_bets.append({"market":"Spread","sel":bet_data["pod_away_team"],"line":bck_s["line"],"bck_odds":bck_s["odds"],"pin_nvp":pin_s_market.get("nvp_american_away"),"ev":f"{ev*100:.2f}%"})
+                            potential_bets.append({"market":"Spread","sel":normalize_team_name_for_matching(bet_data["pod_away_team"]),"line":bck_s["line"],"bck_odds":bck_s["odds"],"pin_nvp":pin_s_market.get("nvp_american_away"),"ev":f"{ev*100:.2f}%"})
                 except (ValueError, TypeError): continue
     if pin_totals_dict:
         bck_total_line = bet_data.get("game_total_line")
         if bck_total_line:
-            pin_t_market = pin_totals_dict.get(str(bck_total_line))
-            if pin_t_market:
-                if bet_data.get("game_total_over_odds") and pin_t_market.get("nvp_american_over"):
-                    ev = calculate_ev(american_to_decimal(bet_data["game_total_over_odds"]), american_to_decimal(pin_t_market.get("nvp_american_over")))
-                    if ev is not None:
-                        potential_bets.append({"market":"Total","sel":"Over","line":bck_total_line,"bck_odds":bet_data["game_total_over_odds"],"pin_nvp":pin_t_market.get("nvp_american_over"),"ev":f"{ev*100:.2f}%"})
-                if bet_data.get("game_total_under_odds") and pin_t_market.get("nvp_american_under"):
-                    ev = calculate_ev(american_to_decimal(bet_data["game_total_under_odds"]), american_to_decimal(pin_t_market.get("nvp_american_under")))
-                    if ev is not None:
-                        potential_bets.append({"market":"Total","sel":"Under","line":bck_total_line,"bck_odds":bet_data["game_total_under_odds"],"pin_nvp":pin_t_market.get("nvp_american_under"),"ev":f"{ev*100:.2f}%"})
+            try:
+                bck_total_line_float = float(bck_total_line)
+                pin_t_market = next((t for t in pin_totals_dict.values() if abs(float(t.get("points", 0)) - bck_total_line_float) < 0.01), None)
+                if pin_t_market:
+                    if bet_data.get("game_total_over_odds") and pin_t_market.get("nvp_american_over"):
+                        ev = calculate_ev(american_to_decimal(bet_data["game_total_over_odds"]), american_to_decimal(pin_t_market.get("nvp_american_over")))
+                        if ev is not None:
+                            potential_bets.append({"market":"Total","sel":"Over","line":bck_total_line,"bck_odds":bet_data["game_total_over_odds"],"pin_nvp":pin_t_market.get("nvp_american_over"),"ev":f"{ev*100:.2f}%"})
+                    if bet_data.get("game_total_under_odds") and pin_t_market.get("nvp_american_under"):
+                        ev = calculate_ev(american_to_decimal(bet_data["game_total_under_odds"]), american_to_decimal(pin_t_market.get("nvp_american_under")))
+                        if ev is not None:
+                            potential_bets.append({"market":"Total","sel":"Under","line":bck_total_line,"bck_odds":bet_data["game_total_under_odds"],"pin_nvp":pin_t_market.get("nvp_american_under"),"ev":f"{ev*100:.2f}%"})
+            except (ValueError, TypeError):
+                pass
     bet_data["potential_bets_analyzed"] = potential_bets
     return {"status": "success", "message": "BetBCK odds analyzed.", "data": bet_data }
 
