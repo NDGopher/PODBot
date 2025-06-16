@@ -89,4 +89,4 @@ This project is a real-time sports betting odds dashboard that helps you find an
 
 ## License
 
-MIT License (or your preferred license)
+MIT License (or your preferred license) 
